@@ -81,11 +81,11 @@ Configure the following survey questions in your AAP Job Template:
 | **Question** | Operating System Preference |
 | **Answer Type** | Multiple Choice (single select) |
 | **Required** | Yes |
-| **Choices** | rhel.10.0<br>rhel.9<br>rhel.8<br>centos.stream9<br>centos.stream8<br>fedora |
+| **Choices** | rhel.10<br>rhel.9<br>rhel.8<br>centos.stream9<br>centos.stream8<br>fedora |
 | **Default** | rhel.9 |
 
 **Note:** The boot volume DataSource is automatically selected based on the OS preference:
-- `rhel.10.0` → DataSource: `rhel10`
+- `rhel.10` → DataSource: `rhel10`
 - `rhel.9` → DataSource: `rhel9`
 - `rhel.8` → DataSource: `rhel8`
 - `centos.stream9` → DataSource: `centos-stream9`
@@ -213,7 +213,7 @@ The playbook automatically maps OS preferences to DataSource names, eliminating 
 
 | OS Preference | DataSource Name |
 |---------------|-----------------|
-| `rhel.10.0` | `rhel10` |
+| `rhel.10` | `rhel10` |
 | `rhel.9` | `rhel9` |
 | `rhel.8` | `rhel8` |
 | `centos.stream9` | `centos-stream9` |
@@ -228,7 +228,7 @@ The playbook is designed to be idempotent:
 
 1. **Namespace**: If the namespace already exists, it will be reused (not recreated)
 2. **NAD**: If the NetworkAttachmentDefinition already exists, it will be reused (not recreated)
-3. **VM**: The VM will be created or updated based on the kubernetes.core.k8s module behavior
+3. **VM**: The VM will be created or updated based on the redhat.openshift.k8s module behavior
 
 ### NAD Naming Convention
 

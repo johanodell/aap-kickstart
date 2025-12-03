@@ -82,13 +82,13 @@ Key configuration options:
 Deploy the controller:
 
 ```bash
-$ oc apply -f operators/aap-2.6-instance.yaml
+oc apply -f operators/aap-2.6-instance.yaml
 ```
 
 Monitor the deployment:
 
 ```bash
-$ oc get automationcontroller -n aap -w
+oc get automationcontroller -n aap -w
 ```
 
 Wait for the controller to reach `Running` status (this may take 5-10 minutes).
@@ -98,13 +98,13 @@ Wait for the controller to reach `Running` status (this may take 5-10 minutes).
 Once deployed, get the route URL:
 
 ```bash
-$ oc get route -n aap
+oc get route -n aap
 ```
 
 Get the admin password:
 
 ```bash
-$ oc get secret aap-admin-password -n aap -o jsonpath='{.data.password}' | base64 -d
+oc get secret aap-admin-password -n aap -o jsonpath='{.data.password}' | base64 -d
 ```
 
 Login to the AAP web interface:
@@ -167,11 +167,16 @@ If you have more OpenShift Clusters create a new credential type for each cluste
 
 This token should be scoped but for now let's just add a cluster-admin scoped token.
 
-Make sure you are in the aap project: `oc project aap` 
+Make sure you are in the aap project: `oc project aap`
+
 Add a ServiceAccount: `oc create sa controller-credential -n aap`
+
 Add cluster-admin rights to the service account: `oc adm policy add-cluster-role-to-user cluster-admin -z controller-credential`
+
 Create a token for the SA: `oc create token controller-credential --duration=4294967296s`
-(hmm 136 years, 29 weeks, 3 days, 6 hours, 28 minutes, 16 seconds. :-0). Copy it and add it as a Credential in the controller using the new credential types you created in previous step (repeat for all clusters):
+(hmm 136 years, 29 weeks, 3 days, 6 hours, 28 minutes, 16 seconds. :-0). 
+
+Copy it and add it as a Credential in the controller using the new credential types you created in previous step (repeat for all clusters):
 ![alt text](images/create-credential.png)
 
 
@@ -183,13 +188,9 @@ aap-kickstart/
 ├── README.md                          # This file
 ├── operators/                        # Operator manifests   
     ├── aap-operator-install.yaml     # Combined operator installation manifest
-    └── aap-2.6-instance.yaml.        # Automation controller instance 
+    └── aap-2.6-instance.yaml         # Automation controller instance 
 
 ```
-
-## Configuration as Code
-
-This repository follows GitOps principles. All AAP configuration should be declared in manifests and applied via `oc apply` or ArgoCD/Flux.
 
 ### Recommended Next Steps
 
@@ -208,13 +209,13 @@ After deployment:
 Check subscription status:
 
 ```bash
-$ oc describe subscription ansible-automation-platform-operator -n aap
+oc describe subscription ansible-automation-platform-operator -n aap
 ```
 
 Check install plan:
 
 ```bash
-$ oc get installplan -n aap
+oc get installplan -n aap
 ```
 
 ### Controller pods failing
@@ -222,13 +223,13 @@ $ oc get installplan -n aap
 Check pod logs:
 
 ```bash
-$ oc logs -n aap <pod-name>
+oc logs -n aap <pod-name>
 ```
 
 Check events:
 
 ```bash
-$ oc get events -n aap --sort-by='.lastTimestamp'
+oc get events -n aap --sort-by='.lastTimestamp'
 ```
 
 ### Database connection issues
@@ -236,7 +237,7 @@ $ oc get events -n aap --sort-by='.lastTimestamp'
 Verify PostgreSQL pod is running:
 
 ```bash
-$ oc get pods -n aap -l app.kubernetes.io/component=database
+oc get pods -n aap -l app.kubernetes.io/component=database
 ```
 
 ## References
