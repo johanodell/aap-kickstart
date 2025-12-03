@@ -21,19 +21,19 @@ The AAP operator manages the lifecycle of Ansible Automation Platform components
 1. Clone your forked repo to the laptop. 
 
 ```bash
-$ git clone <repository-url>
-$ cd aap-kickstart
+git clone <repository-url>
+cd aap-kickstart
 ```
 3. login to the cluster using oc/kubectl
 
 ```bash
-$ oc login -u userXX <api-address>
+oc login -u userXX <api-address>
 ```
 
 4. Apply the operator installation manifest:
 
 ```bash
-$ oc apply -f operators/aap-operator-install.yaml
+oc apply -f operators/aap-operator-install.yaml
 ```
 
 This manifest creates:
@@ -44,7 +44,7 @@ This manifest creates:
 2. Verify the operator installation:
 
 ```bash
-$ oc get csv -n aap
+oc get csv -n aap
 ```
 
 Wait until the CSV (ClusterServiceVersion) shows `Succeeded` in the PHASE column:
@@ -57,7 +57,7 @@ ansible-automation-platform-operator.v2.6.0-1     Ansible Automation Platform   
 3. Check operator pod is running:
 
 ```bash
-$ oc get pods -n aap
+oc get pods -n aap
 ```
 
 Expected output:
