@@ -4,7 +4,7 @@
 ###############################################################################
 #
 # Purpose:
-#   Creates a VirtualMachine (VM) in either the endor or coruscant OpenShift
+#   Creates a VirtualMachine (VM) in either the T2LAB or Dummy OpenShift
 #   cluster using OpenShift Virtualization (KubeVirt) with the instancetype/
 #   preference pattern for standardized VM configurations.
 #
@@ -21,13 +21,13 @@
 #   - kubernetes.core collection installed
 #   - OpenShift Virtualization operator installed in target cluster
 #   - AAP Custom Credentials configured with environment variables:
-#     * ENDOR_K8S_TOKEN: Bearer token for endor cluster
-#     * CORUSCANT_K8S_TOKEN: Bearer token for coruscant cluster
-#     * ENDOR_API_URL: API URL for endor cluster
-#     * CORUSCANT_API_URL: API URL for coruscant cluster
+#     * T2LAB_K8S_TOKEN: Bearer token for T2LAB cluster
+#     * Dummy_K8S_TOKEN: Bearer token for Dummy cluster
+#     * T2LAB_API_URL: API URL for T2LAB cluster
+#     * Dummy_API_URL: API URL for Dummy cluster
 #
 # AAP Survey Variables:
-#   - cluster_name: (required) Target cluster (endor or coruscant)
+#   - cluster_name: (required) Target cluster (T2LAB or Dummy)
 #   - namespace_name: (required) Namespace where VM will be created
 #   - vm_name: (required) Name of the VirtualMachine
 #   - instance_type: (required) OpenShift Virt instancetype
@@ -50,7 +50,7 @@
 #   Question 1: Cluster Name
 #     Variable: cluster_name
 #     Type: Multiple Choice
-#     Choices: endor, coruscant
+#     Choices: T2LAB, Dummy
 #
 #   Question 2: Namespace Name
 #     Variable: namespace_name
@@ -84,7 +84,7 @@
 #
 #   # Basic RHEL 9 VM with VLAN network
 #   ansible-playbook provision-vm.yaml \
-#     -e cluster_name=endor \
+#     -e cluster_name=T2LAB \
 #     -e namespace_name=my-app-dev \
 #     -e vm_name=rhel9-app01 \
 #     -e instance_type=U1.large \
@@ -94,7 +94,7 @@
 #
 #   # VM with custom cloud-init and SSH key
 #   ansible-playbook provision-vm.yaml \
-#     -e cluster_name=coruscant \
+#     -e cluster_name=Dummy \
 #     -e namespace_name=vm-workloads \
 #     -e vm_name=web-server \
 #     -e instance_type=U1.xlarge \
@@ -126,12 +126,12 @@
     # Cluster configuration mapping
     # These reference environment variables injected by AAP credentials
     cluster_configs:
-      endor:
-        api_url: "{{ lookup('env', 'ENDOR_API_URL') }}"
-        token: "{{ lookup('env', 'ENDOR_K8S_TOKEN') }}"
-      coruscant:
-        api_url: "{{ lookup('env', 'CORUSCANT_API_URL') }}"
-        token: "{{ lookup('env', 'CORUSCANT_K8S_TOKEN') }}"
+      T2LAB:
+        api_url: "{{ lookup('env', 'T2LAB_API_URL') }}"
+        token: "{{ lookup('env', 'T2LAB_K8S_TOKEN') }}"
+      Dummy:
+        api_url: "{{ lookup('env', 'Dummy_API_URL') }}"
+        token: "{{ lookup('env', 'Dummy_K8S_TOKEN') }}"
 
     # Supported U-series instance types
     supported_instance_types:
@@ -179,9 +179,9 @@
     - name: Validate cluster_name is a valid cluster
       ansible.builtin.assert:
         that:
-          - cluster_name in ['endor', 'coruscant']
+          - cluster_name in ['T2LAB', 'Dummy']
         fail_msg: >
-          Invalid cluster_name '{{ cluster_name }}'. Must be either 'endor' or 'coruscant'.
+          Invalid cluster_name '{{ cluster_name }}'. Must be either 'T2LAB' or 'Dummy'.
         quiet: true
 
     - name: Validate namespace_name follows Kubernetes naming conventions
