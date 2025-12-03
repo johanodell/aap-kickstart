@@ -33,6 +33,7 @@
 #   - instance_type: (required) OpenShift Virt instancetype
 #                    U-series: U1.medium, U1.large, U1.xlarge, U1.2xlarge, U1.4xlarge, U1.8xlarge
 #   - boot_volume_source: (required) DataSource or PVC name for boot disk
+#   - boot_volume_source_namespace: (optional) Namespace for DataSource (default: "openshift-virtualization-os-images")
 #   - boot_volume_size: (required) Size for boot disk (e.g., "30Gi")
 #   - network_nad_name: (required) NetworkAttachmentDefinition name for VLAN network
 #   - network_interface_name: (optional) Network interface name (default: "vlan-nic")
@@ -120,6 +121,7 @@
     cloud_init_ssh_key: ""
     cloud_init_hostname: "{{ vm_name }}"
     auto_start: true
+    boot_volume_source_namespace: "openshift-virtualization-os-images"
 
     # Cluster configuration mapping
     # These reference environment variables injected by AAP credentials
@@ -257,6 +259,7 @@
           - "Instance Type: {{ instance_type }}"
           - "Preference: {{ preference_name }}"
           - "Boot Volume Source: {{ boot_volume_source }}"
+          - "Boot Volume Source Namespace: {{ boot_volume_source_namespace }}"
           - "Boot Volume Size: {{ boot_volume_size }}"
           - "Network NAD: {{ network_nad_name }}"
           - "Network Interface: {{ network_interface_name }}"
@@ -292,7 +295,7 @@
             api_version: cdi.kubevirt.io/v1beta1
             kind: DataSource
             name: "{{ boot_volume_source }}"
-            namespace: "{{ namespace_name }}"
+            namespace: "{{ boot_volume_source_namespace }}"
           register: datasource_check
           failed_when: false
 
@@ -313,8 +316,9 @@
             that:
               - (datasource_check.resources | length > 0) or (pvc_check.resources | default([]) | length > 0)
             fail_msg: >
-              Boot volume source '{{ boot_volume_source }}' not found as DataSource or PVC
-              in namespace '{{ namespace_name }}'. Please verify the source exists.
+              Boot volume source '{{ boot_volume_source }}' not found as DataSource in namespace
+              '{{ boot_volume_source_namespace }}' or as PVC in namespace '{{ namespace_name }}'.
+              Please verify the source exists.
             quiet: true
 
         - name: Set boot volume source type
@@ -327,7 +331,7 @@
               - "Boot volume source found:"
               - "  Type: {{ boot_volume_source_kind }}"
               - "  Name: {{ boot_volume_source }}"
-              - "  Namespace: {{ namespace_name }}"
+              - "  Namespace: {{ boot_volume_source_namespace if boot_volume_source_kind == 'DataSource' else namespace_name }}"
 
         - name: Verify NetworkAttachmentDefinition exists
           kubernetes.core.k8s_info:
@@ -430,6 +434,7 @@
                       sourceRef:
                         kind: "{{ boot_volume_source_kind }}"
                         name: "{{ boot_volume_source }}"
+                        namespace: "{{ boot_volume_source_namespace if boot_volume_source_kind == 'DataSource' else namespace_name }}"
                       storage:
                         resources:
                           requests:
