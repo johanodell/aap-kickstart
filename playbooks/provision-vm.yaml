@@ -135,12 +135,12 @@
 
     # Supported U-series instance types
     supported_instance_types:
-      - U1.medium
-      - U1.large
-      - U1.xlarge
-      - U1.2xlarge
-      - U1.4xlarge
-      - U1.8xlarge
+      - u1.medium
+      - u1.large
+      - u1.xlarge
+      - u1.2xlarge
+      - u1.4xlarge
+      - u1.8xlarge
 
     # Common preference options
     supported_preferences:
