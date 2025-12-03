@@ -1,0 +1,27 @@
+---
+###############################################################################
+# Handlers for provision_namespace Role
+###############################################################################
+#
+# Handlers are tasks that run when notified by other tasks.
+# Currently, this role does not require handlers as namespace provisioning
+# is a declarative operation without post-creation actions.
+#
+# Future handlers might include:
+# - Notification webhooks
+# - Logging to external systems
+# - Triggering follow-up automation
+#
+
+# Example handler structure (commented out):
+#
+# - name: Send notification
+#   ansible.builtin.uri:
+#     url: "{{ notification_webhook_url }}"
+#     method: POST
+#     body_format: json
+#     body:
+#       namespace: "{{ namespace_name }}"
+#       cluster: "{{ cluster_name }}"
+#       status: created
+#   when: notification_webhook_url is defined

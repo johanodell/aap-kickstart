@@ -1,0 +1,71 @@
+---
+###############################################################################
+# Role Metadata for provision_namespace
+###############################################################################
+
+galaxy_info:
+  author: AAP Platform Team
+  description: Ansible role for provisioning namespaces in OpenShift clusters (endor and coruscant)
+  company: Your Organization
+
+  # Minimum Ansible version required
+  min_ansible_version: "2.14"
+
+  # License (optional)
+  license: MIT
+
+  # Platforms this role supports
+  platforms:
+    - name: RHEL
+      versions:
+        - 8
+        - 9
+        - 10
+    - name: CentOS Stream
+      versions:
+        - 8
+        - 9
+    - name: Fedora
+      versions:
+        - 38
+        - 39
+        - 40
+
+  # Galaxy tags for categorization
+  galaxy_tags:
+    - openshift
+    - kubernetes
+    - namespace
+    - provisioning
+    - cloud
+    - automation
+    - aap
+
+# ------------------------------------------------------------------------------
+# Role Dependencies
+# ------------------------------------------------------------------------------
+
+dependencies: []
+  # This role has no external role dependencies
+  # However, it requires the kubernetes.core collection
+  # Add it to your requirements.yml:
+  #
+  # collections:
+  #   - name: kubernetes.core
+  #     version: ">=2.4.0"
+
+# ------------------------------------------------------------------------------
+# Collection Requirements
+# ------------------------------------------------------------------------------
+
+collections:
+  - kubernetes.core
+
+# ------------------------------------------------------------------------------
+# Role Compatibility
+# ------------------------------------------------------------------------------
+
+# This role is compatible with:
+# - Ansible Automation Platform 2.x
+# - OpenShift 4.x
+# - Kubernetes 1.24+

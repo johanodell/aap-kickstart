@@ -1,0 +1,22 @@
+---
+# Ansible-lint configuration for aap-kickstart project
+
+# Exclude paths
+exclude_paths:
+  - .git/
+  - .github/
+  - venv/
+  - .venv/
+
+# Skip specific rules
+skip_list:
+  - args[module]  # Skip false positives for kubernetes.core collection modules
+  - name[casing]  # Allow various naming conventions
+  - yaml[line-length]  # Allow longer lines for readability
+  - var-naming[no-role-prefix]  # Allow vars without role prefix for readability
+
+# Enable offline mode (don't check for galaxy role updates)
+offline: true
+
+# Set verbosity
+verbosity: 1

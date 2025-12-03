@@ -1,0 +1,62 @@
+---
+###############################################################################
+# Example Playbook: Provisioning Multiple Namespaces
+###############################################################################
+
+- name: Provision multiple namespaces across environments
+  hosts: localhost
+  gather_facts: true
+
+  tasks:
+    - name: Provision development namespace in endor
+      ansible.builtin.include_role:
+        name: provision_namespace
+      vars:
+        cluster_name: endor
+        namespace_name: myapp-dev
+        namespace_labels:
+          environment: development
+          team: appdev
+          application: myapp
+        namespace_annotations:
+          contact: dev-team@example.com
+          description: Development environment for myapp
+
+    - name: Provision staging namespace in endor
+      ansible.builtin.include_role:
+        name: provision_namespace
+      vars:
+        cluster_name: endor
+        namespace_name: myapp-staging
+        namespace_labels:
+          environment: staging
+          team: appdev
+          application: myapp
+        namespace_annotations:
+          contact: dev-team@example.com
+          description: Staging environment for myapp
+
+    - name: Provision production namespace in coruscant
+      ansible.builtin.include_role:
+        name: provision_namespace
+      vars:
+        cluster_name: coruscant
+        namespace_name: myapp-prod
+        namespace_labels:
+          environment: production
+          team: appdev
+          application: myapp
+          backup: enabled
+          monitoring: critical
+        namespace_annotations:
+          contact: ops-team@example.com
+          description: Production environment for myapp
+          sla: "99.9%"
+
+    - name: Display summary
+      ansible.builtin.debug:
+        msg:
+          - "=== Namespace Provisioning Complete ==="
+          - "Development: myapp-dev (endor)"
+          - "Staging: myapp-staging (endor)"
+          - "Production: myapp-prod (coruscant)"

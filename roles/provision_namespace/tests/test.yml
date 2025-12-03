@@ -1,0 +1,37 @@
+---
+###############################################################################
+# Test Playbook for provision_namespace Role
+###############################################################################
+
+- name: Test provision_namespace role
+  hosts: localhost
+  gather_facts: true
+
+  pre_tasks:
+    - name: Display test information
+      ansible.builtin.debug:
+        msg:
+          - "=== Testing provision_namespace Role ==="
+          - "This test will provision a namespace named 'test-namespace-{{ ansible_date_time.epoch }}'"
+          - "Cluster: {{ test_cluster | default('endor') }}"
+
+  roles:
+    - role: provision_namespace
+      vars:
+        cluster_name: "{{ test_cluster | default('endor') }}"
+        namespace_name: "test-namespace-{{ ansible_date_time.epoch }}"
+        namespace_labels:
+          test: "true"
+          created-by: ansible-test
+        namespace_annotations:
+          test-run: "{{ ansible_date_time.iso8601 }}"
+          description: "Test namespace created by automated testing"
+
+  post_tasks:
+    - name: Display test results
+      ansible.builtin.debug:
+        msg:
+          - "=== Test Complete ==="
+          - "Namespace: test-namespace-{{ ansible_date_time.epoch }}"
+          - "You may want to clean up this test namespace after verification"
+          - "To delete: oc delete namespace test-namespace-{{ ansible_date_time.epoch }}"

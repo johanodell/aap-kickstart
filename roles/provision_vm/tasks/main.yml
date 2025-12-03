@@ -1,0 +1,219 @@
+---
+# tasks file for provision_vm
+
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - cluster_name is defined and cluster_name | length > 0
+      - namespace_name is defined and namespace_name | length > 0
+      - vm_name is defined and vm_name | length > 0
+      - instance_type is defined and instance_type | length > 0
+      - preference is defined and preference | length > 0
+      - boot_volume_source is defined and boot_volume_source | length > 0
+      - network_nad_name is defined and network_nad_name | length > 0
+      - root_disk_size is defined and root_disk_size | length > 0
+    fail_msg: "Required variables missing: cluster_name, namespace_name, vm_name, instance_type, preference, boot_volume_source, network_nad_name, root_disk_size"
+    success_msg: "All required variables provided"
+
+- name: Validate cluster name
+  ansible.builtin.assert:
+    that:
+      - cluster_name in ['endor', 'coruscant']
+    fail_msg: "cluster_name must be 'endor' or 'coruscant'"
+    success_msg: "Cluster name '{{ cluster_name }}' is valid"
+
+- name: Validate instance type
+  ansible.builtin.assert:
+    that:
+      - instance_type in valid_instance_types
+    fail_msg: "instance_type must be one of: {{ valid_instance_types | join(', ') }}"
+    success_msg: "Instance type '{{ instance_type }}' is valid"
+
+- name: Validate preference
+  ansible.builtin.assert:
+    that:
+      - preference in valid_preferences
+    fail_msg: "preference must be one of: {{ valid_preferences | join(', ') }}"
+    success_msg: "Preference '{{ preference }}' is valid"
+
+- name: Set cluster-specific facts
+  ansible.builtin.set_fact:
+    k8s_host: "{{ lookup('env', cluster_name | upper + '_API_URL') }}"
+    k8s_api_key: "{{ lookup('env', cluster_name | upper + '_K8S_TOKEN') }}"
+    k8s_verify_ssl: "{{ lookup('env', cluster_name | upper + '_VERIFY_SSL') | default('true') }}"
+    k8s_ca_cert: "{{ lookup('env', cluster_name | upper + '_CA_CERT') | default('') }}"
+
+- name: Validate cluster credentials
+  ansible.builtin.assert:
+    that:
+      - k8s_host | length > 0
+      - k8s_api_key | length > 0
+    fail_msg: "Cluster credentials not found. Ensure {{ cluster_name | upper }}_API_URL and {{ cluster_name | upper }}_K8S_TOKEN are set"
+    success_msg: "Cluster credentials validated for {{ cluster_name }}"
+
+- name: Verify namespace exists
+  kubernetes.core.k8s_info:
+    host: "{{ k8s_host }}"
+    api_key: "{{ k8s_api_key }}"
+    validate_certs: "{{ k8s_verify_ssl | bool }}"
+    ca_cert: "{{ k8s_ca_cert if k8s_ca_cert | length > 0 else omit }}"
+    kind: Namespace
+    name: "{{ namespace_name }}"
+  register: namespace_check
+  failed_when: namespace_check.resources | length == 0
+
+- name: Verify DataSource exists
+  kubernetes.core.k8s_info:
+    host: "{{ k8s_host }}"
+    api_key: "{{ k8s_api_key }}"
+    validate_certs: "{{ k8s_verify_ssl | bool }}"
+    ca_cert: "{{ k8s_ca_cert if k8s_ca_cert | length > 0 else omit }}"
+    kind: DataSource
+    api_version: cdi.kubevirt.io/v1beta1
+    namespace: "{{ datasource_namespace }}"
+    name: "{{ boot_volume_source }}"
+  register: datasource_check
+  failed_when: datasource_check.resources | length == 0
+
+- name: Verify NetworkAttachmentDefinition exists
+  kubernetes.core.k8s_info:
+    host: "{{ k8s_host }}"
+    api_key: "{{ k8s_api_key }}"
+    validate_certs: "{{ k8s_verify_ssl | bool }}"
+    ca_cert: "{{ k8s_ca_cert if k8s_ca_cert | length > 0 else omit }}"
+    kind: NetworkAttachmentDefinition
+    namespace: "{{ namespace_name }}"
+    name: "{{ network_nad_name }}"
+    api_version: k8s.cni.cncf.io/v1
+  register: nad_check
+  failed_when: nad_check.resources | length == 0
+
+- name: Build cloud-init user data
+  when: cloud_init_user_data | length > 0 or ssh_authorized_keys | length > 0
+  block:
+    - name: Set default cloud-init if SSH keys provided but no custom user data
+      when:
+        - cloud_init_user_data | length == 0
+        - ssh_authorized_keys | length > 0
+      ansible.builtin.set_fact:
+        cloud_init_user_data: |
+          #cloud-config
+          user: cloud-user
+          password: changeme
+          chpasswd:
+            expire: false
+          ssh_authorized_keys:
+          {% for key in ssh_authorized_keys %}
+            - {{ key }}
+          {% endfor %}
+
+- name: Create VirtualMachine
+  redhat.openshift.k8s:
+    host: "{{ k8s_host }}"
+    api_key: "{{ k8s_api_key }}"
+    validate_certs: "{{ k8s_verify_ssl | bool }}"
+    ca_cert: "{{ k8s_ca_cert if k8s_ca_cert | length > 0 else omit }}"
+    state: present
+    definition:
+      apiVersion: kubevirt.io/v1
+      kind: VirtualMachine
+      metadata:
+        name: "{{ vm_name }}"
+        namespace: "{{ namespace_name }}"
+        labels: "{{ vm_labels | combine({'managed-by': 'ansible', 'kubevirt.io/vm': vm_name}) }}"
+        annotations: "{{ vm_annotations }}"
+      spec:
+        running: "{{ vm_running }}"
+        instancetype:
+          name: "{{ instance_type }}"
+        preference:
+          name: "{{ preference }}"
+        dataVolumeTemplates:
+          - metadata:
+              name: "{{ vm_name }}-rootdisk"
+            spec:
+              sourceRef:
+                kind: DataSource
+                name: "{{ boot_volume_source }}"
+                namespace: "{{ datasource_namespace }}"
+              storage:
+                resources:
+                  requests:
+                    storage: "{{ root_disk_size }}"
+        template:
+          metadata:
+            labels:
+              kubevirt.io/vm: "{{ vm_name }}"
+          spec:
+            networks:
+              - name: vlan-nic
+                multus:
+                  networkName: "{{ network_nad_name }}"
+            domain:
+              devices:
+                disks:
+                  - disk:
+                      bus: virtio
+                    name: rootdisk
+                  - disk:
+                      bus: virtio
+                    name: cloudinitdisk
+                interfaces:
+                  - name: vlan-nic
+                    bridge: {}
+            volumes:
+              - dataVolume:
+                  name: "{{ vm_name }}-rootdisk"
+                name: rootdisk
+              - cloudInitNoCloud:
+                  userData: "{{ cloud_init_user_data if cloud_init_user_data | length > 0 else '#cloud-config' }}"
+                name: cloudinitdisk
+  register: vm_result
+
+- name: Display VM creation result
+  ansible.builtin.debug:
+    msg:
+      - "=== VirtualMachine Created ==="
+      - "Cluster: {{ cluster_name }}"
+      - "Namespace: {{ namespace_name }}"
+      - "VM Name: {{ vm_name }}"
+      - "Instance Type: {{ instance_type }}"
+      - "Preference: {{ preference }}"
+      - "Boot Volume: {{ boot_volume_source }}"
+      - "Network: {{ network_nad_name }}"
+      - "Running: {{ vm_running }}"
+      - "Status: {{ 'Created' if vm_result.changed else 'Already exists' }}"
+
+- name: Wait for VM to be ready
+  when:
+    - vm_running | bool
+    - vm_result.changed
+  kubernetes.core.k8s_info:
+    host: "{{ k8s_host }}"
+    api_key: "{{ k8s_api_key }}"
+    validate_certs: "{{ k8s_verify_ssl | bool }}"
+    ca_cert: "{{ k8s_ca_cert if k8s_ca_cert | length > 0 else omit }}"
+    kind: VirtualMachine
+    namespace: "{{ namespace_name }}"
+    name: "{{ vm_name }}"
+  register: vm_status
+  until:
+    - vm_status.resources | length > 0
+    - vm_status.resources[0].status.ready is defined
+    - vm_status.resources[0].status.ready
+  retries: 30
+  delay: 10
+
+- name: Display VM access information
+  when: vm_running | bool
+  ansible.builtin.debug:
+    msg:
+      - "=== VM Access Information ==="
+      - "To access the VM console:"
+      - "  $ virtctl console {{ vm_name }} -n {{ namespace_name }}"
+      - ""
+      - "To get VM IP address:"
+      - "  $ oc get vmi {{ vm_name }} -n {{ namespace_name }} -o jsonpath='{.status.interfaces[0].ipAddress}'"
+      - ""
+      - "To SSH to the VM (if SSH keys configured):"
+      - "  $ ssh cloud-user@<vm-ip-address>"

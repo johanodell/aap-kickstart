@@ -1,0 +1,217 @@
+---
+###############################################################################
+# Main Tasks for provision_namespace Role
+###############################################################################
+
+# ------------------------------------------------------------------------------
+# Validation Tasks
+# ------------------------------------------------------------------------------
+
+- name: Validate required variables are provided
+  ansible.builtin.assert:
+    that:
+      - cluster_name is defined
+      - cluster_name != ''
+      - namespace_name is defined
+      - namespace_name != ''
+    fail_msg: >
+      Required variables missing. Please provide both cluster_name and namespace_name.
+      See role documentation for details.
+    quiet: true
+  tags:
+    - validation
+    - provision_namespace
+
+- name: Validate cluster_name is a valid cluster
+  ansible.builtin.assert:
+    that:
+      - cluster_name in ['endor', 'coruscant']
+    fail_msg: >
+      Invalid cluster_name '{{ cluster_name }}'. Must be either 'endor' or 'coruscant'.
+    quiet: true
+  tags:
+    - validation
+    - provision_namespace
+
+- name: Validate namespace_name follows Kubernetes naming conventions
+  ansible.builtin.assert:
+    that:
+      - namespace_name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+      - namespace_name | length <= 63
+    fail_msg: >
+      Invalid namespace_name '{{ namespace_name }}'. Must:
+      - Start with lowercase letter or number
+      - Contain only lowercase letters, numbers, and hyphens
+      - End with lowercase letter or number
+      - Be 63 characters or less
+    quiet: true
+  tags:
+    - validation
+    - provision_namespace
+
+# ------------------------------------------------------------------------------
+# Credential Configuration
+# ------------------------------------------------------------------------------
+
+- name: Set cluster configuration facts
+  ansible.builtin.set_fact:
+    provision_namespace_api_url: "{{ provision_namespace_cluster_configs[cluster_name].api_url }}"
+    provision_namespace_token: "{{ provision_namespace_cluster_configs[cluster_name].token }}"
+    cacheable: false
+  no_log: true
+  tags:
+    - configuration
+    - provision_namespace
+
+- name: Validate cluster credentials are available
+  ansible.builtin.assert:
+    that:
+      - provision_namespace_api_url is defined
+      - provision_namespace_api_url != ''
+      - provision_namespace_token is defined
+      - provision_namespace_token != ''
+    fail_msg: >
+      Missing credentials for cluster '{{ cluster_name }}'.
+      Ensure the following environment variables are set:
+      - {{ cluster_name | upper }}_API_URL
+      - {{ cluster_name | upper }}_K8S_TOKEN
+    quiet: true
+  tags:
+    - validation
+    - configuration
+    - provision_namespace
+
+# ------------------------------------------------------------------------------
+# Display Operation Summary
+# ------------------------------------------------------------------------------
+
+- name: Display operation summary
+  ansible.builtin.debug:
+    msg:
+      - "=== Namespace Provisioning Operation ==="
+      - "Target Cluster: {{ cluster_name }}"
+      - "Namespace: {{ namespace_name }}"
+      - "API URL: {{ provision_namespace_api_url }}"
+      - "Labels: {{ namespace_labels if namespace_labels else 'None' }}"
+      - "Annotations: {{ namespace_annotations if namespace_annotations else 'None' }}"
+  tags:
+    - provision_namespace
+
+# ------------------------------------------------------------------------------
+# Namespace Provisioning
+# ------------------------------------------------------------------------------
+
+- name: Provision namespace with error handling
+  block:
+    - name: Prepare standard annotations with runtime values
+      ansible.builtin.set_fact:
+        provision_namespace_runtime_annotations:
+          openshift.io/description: "Namespace provisioned by Ansible Automation Platform"
+          provisioned-date: "{{ now(utc=true).isoformat() }}"
+          provisioned-cluster: "{{ cluster_name }}"
+      tags:
+        - provision_namespace
+
+    - name: Merge user-provided labels with standard labels
+      ansible.builtin.set_fact:
+        provision_namespace_final_labels: "{{ namespace_labels | combine(provision_namespace_standard_labels) }}"
+      tags:
+        - provision_namespace
+
+    - name: Merge user-provided annotations with standard annotations
+      ansible.builtin.set_fact:
+        provision_namespace_final_annotations: "{{ namespace_annotations | combine(provision_namespace_runtime_annotations) }}"
+      tags:
+        - provision_namespace
+
+    - name: Create namespace in OpenShift cluster
+      redhat.openshift.k8s:
+        host: "{{ provision_namespace_api_url }}"
+        api_key: "{{ provision_namespace_token }}"
+        validate_certs: "{{ provision_namespace_validate_certs }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ namespace_name }}"
+            labels: "{{ provision_namespace_final_labels }}"
+            annotations: "{{ provision_namespace_final_annotations }}"
+      register: provision_namespace_result
+      tags:
+        - provision_namespace
+
+    - name: Verify namespace was created
+      kubernetes.core.k8s_info:
+        host: "{{ provision_namespace_api_url }}"
+        api_key: "{{ provision_namespace_token }}"
+        validate_certs: "{{ provision_namespace_validate_certs }}"
+        kind: Namespace
+        name: "{{ namespace_name }}"
+      register: provision_namespace_info
+      tags:
+        - provision_namespace
+        - verification
+
+    - name: Assert namespace exists and is active
+      ansible.builtin.assert:
+        that:
+          - provision_namespace_info.resources | length > 0
+          - provision_namespace_info.resources[0].status.phase == 'Active'
+        fail_msg: >
+          Namespace verification failed. Namespace may not be in Active state.
+        success_msg: >
+          Namespace '{{ namespace_name }}' is Active in cluster '{{ cluster_name }}'
+        quiet: false
+      tags:
+        - provision_namespace
+        - verification
+
+    - name: Display operation result
+      ansible.builtin.debug:
+        msg:
+          - "=== Operation Completed Successfully ==="
+          - "Cluster: {{ cluster_name }}"
+          - "Namespace: {{ namespace_name }}"
+          - "Status: {{ provision_namespace_info.resources[0].status.phase }}"
+          - "Created: {{ provision_namespace_result.changed | ternary('Yes (new)', 'No (already exists)') }}"
+          - "UID: {{ provision_namespace_info.resources[0].metadata.uid }}"
+          - "Labels: {{ provision_namespace_final_labels }}"
+          - "Annotations: {{ provision_namespace_final_annotations }}"
+      tags:
+        - provision_namespace
+
+    - name: Set operation statistics
+      ansible.builtin.set_stats:
+        data:
+          namespace_created: "{{ provision_namespace_result.changed }}"
+          namespace_name: "{{ namespace_name }}"
+          target_cluster: "{{ cluster_name }}"
+          namespace_uid: "{{ provision_namespace_info.resources[0].metadata.uid }}"
+          operation_timestamp: "{{ now(utc=true).isoformat() }}"
+      tags:
+        - provision_namespace
+
+  rescue:
+    - name: Handle namespace creation failure
+      ansible.builtin.debug:
+        msg:
+          - "=== Operation Failed ==="
+          - "Cluster: {{ cluster_name }}"
+          - "Namespace: {{ namespace_name }}"
+          - "Error: See above for details"
+      tags:
+        - provision_namespace
+
+    - name: Fail with clear error message
+      ansible.builtin.fail:
+        msg: >
+          Failed to provision namespace '{{ namespace_name }}' in cluster '{{ cluster_name }}'.
+          Please check the error details above and verify:
+          1. Cluster credentials are correct and not expired
+          2. You have permissions to create namespaces
+          3. The namespace name is valid and not already in use
+          4. The cluster API is accessible from this host
+          5. The kubernetes.core collection is installed
+      tags:
+        - provision_namespace

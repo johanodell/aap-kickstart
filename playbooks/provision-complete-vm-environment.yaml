@@ -1,0 +1,186 @@
+---
+- name: Provision Complete VM Environment
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # Cluster selection
+    cluster_name: ""  # Survey: endor or coruscant
+
+    # Namespace configuration
+    namespace_name: ""  # Survey: namespace to create/use
+    ns_labels:
+      managed-by: ansible
+      provisioned-via: aap
+    ns_annotations:
+      description: "VM environment provisioned via AAP"
+
+    # Network configuration
+    vlan_id: ""  # Survey: VLAN ID (e.g., 100)
+    nad_name: "vlan{{ vlan_id }}-net"  # Auto-generated from VLAN ID
+    nad_type: "bridge"  # Default to bridge
+    bridge_name: "ovs-vm-bridge"  # OVS bridge connected to enp2s0 trunk
+
+    # VM configuration
+    vm_name: ""  # Survey: VM name
+    instance_type: "u1.medium"  # Survey: u1.small, u1.medium, u1.large, etc.
+    preference: "rhel.9"  # Survey: rhel.10.0, rhel.9, rhel.8, etc.
+    boot_volume_source_override: ""  # Survey: Optional override for DataSource name
+    root_disk_size: "30Gi"  # Survey: disk size
+    vm_running: true  # Survey: true/false
+    ssh_authorized_keys: []  # Survey: SSH keys (one per line)
+
+    # DataSource mapping from preference to DataSource name
+    preference_to_datasource:
+      "rhel.10": "rhel10"
+      "rhel.9": "rhel9"
+      "rhel.8": "rhel8"
+      "centos.stream9": "centos-stream9"
+      "centos.stream8": "centos-stream8"
+      "fedora": "fedora"
+
+    # VM labels and annotations
+    vm_labels:
+      environment: production
+      provisioned-by: aap
+    vm_annotations:
+      provisioned-date: "{{ now(utc=true).isoformat() }}"
+
+  tasks:
+    - name: Set boot_volume_source from preference mapping
+      ansible.builtin.set_fact:
+        boot_volume_source: "{{ boot_volume_source_override if boot_volume_source_override | length > 0 else preference_to_datasource[preference] }}"
+
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - cluster_name is defined and cluster_name | length > 0
+          - namespace_name is defined and namespace_name | length > 0
+          - vlan_id is defined and vlan_id | length > 0
+          - vm_name is defined and vm_name | length > 0
+          - instance_type is defined and instance_type | length > 0
+          - preference is defined and preference | length > 0
+          - boot_volume_source is defined and boot_volume_source | length > 0
+          - root_disk_size is defined and root_disk_size | length > 0
+        fail_msg: "Missing required variables. Please check survey configuration."
+        success_msg: "All required variables provided"
+
+    - name: Validate preference has DataSource mapping
+      ansible.builtin.assert:
+        that:
+          - preference in preference_to_datasource.keys() or boot_volume_source_override | length > 0
+        fail_msg: "Invalid preference '{{ preference }}'. Must be one of: {{ preference_to_datasource.keys() | list | join(', ') }}, or provide boot_volume_source_override."
+        success_msg: "Preference '{{ preference }}' mapped to DataSource '{{ boot_volume_source }}'"
+
+    - name: Display provisioning summary
+      ansible.builtin.debug:
+        msg:
+          - "=== VM Environment Provisioning Summary ==="
+          - "Cluster: {{ cluster_name }}"
+          - "Namespace: {{ namespace_name }}"
+          - "Network: {{ nad_name }} (VLAN {{ vlan_id }})"
+          - "VM Name: {{ vm_name }}"
+          - "Instance Type: {{ instance_type }}"
+          - "OS Preference: {{ preference }}"
+          - "Boot Volume: {{ boot_volume_source }}"
+          - "Disk Size: {{ root_disk_size }}"
+          - "Auto-start: {{ vm_running }}"
+
+    - name: Check if namespace exists
+      kubernetes.core.k8s_info:
+        host: "{{ lookup('env', cluster_name | upper + '_API_URL') }}"
+        api_key: "{{ lookup('env', cluster_name | upper + '_K8S_TOKEN') }}"
+        validate_certs: "{{ lookup('env', cluster_name | upper + '_VERIFY_SSL') | default('true') | bool }}"
+        ca_cert: "{{ lookup('env', cluster_name | upper + '_CA_CERT') if lookup('env', cluster_name | upper + '_CA_CERT') | length > 0 else omit }}"
+        kind: Namespace
+        name: "{{ namespace_name }}"
+      register: namespace_check
+      failed_when: false
+
+    - name: Provision namespace (if it doesn't exist)
+      when: namespace_check.resources | length == 0
+      block:
+        - name: Set namespace metadata variables
+          ansible.builtin.set_fact:
+            _namespace_labels: "{{ ns_labels }}"
+            _namespace_annotations: "{{ ns_annotations }}"
+
+        - name: Create namespace
+          ansible.builtin.include_role:
+            name: provision_namespace
+          vars:
+            namespace_labels: "{{ _namespace_labels }}"
+            namespace_annotations: "{{ _namespace_annotations }}"
+
+        - name: Display namespace creation result
+          ansible.builtin.debug:
+            msg: "Namespace '{{ namespace_name }}' created successfully"
+
+    - name: Namespace already exists
+      when: namespace_check.resources | length > 0
+      ansible.builtin.debug:
+        msg: "Namespace '{{ namespace_name }}' already exists, skipping creation"
+
+    - name: Check if NetworkAttachmentDefinition exists
+      kubernetes.core.k8s_info:
+        host: "{{ lookup('env', cluster_name | upper + '_API_URL') }}"
+        api_key: "{{ lookup('env', cluster_name | upper + '_K8S_TOKEN') }}"
+        validate_certs: "{{ lookup('env', cluster_name | upper + '_VERIFY_SSL') | default('true') | bool }}"
+        ca_cert: "{{ lookup('env', cluster_name | upper + '_CA_CERT') if lookup('env', cluster_name | upper + '_CA_CERT') | length > 0 else omit }}"
+        kind: NetworkAttachmentDefinition
+        api_version: k8s.cni.cncf.io/v1
+        namespace: "{{ namespace_name }}"
+        name: "{{ nad_name }}"
+      register: nad_check
+      failed_when: false
+
+    - name: Provision NetworkAttachmentDefinition (if it doesn't exist)
+      when: nad_check.resources | length == 0
+      block:
+        - name: Set NAD bridge name variable
+          ansible.builtin.set_fact:
+            _nad_bridge_name: "{{ bridge_name }}"
+
+        - name: Create NAD
+          ansible.builtin.include_role:
+            name: provision_nad
+          vars:
+            nad_labels:
+              vlan-id: "{{ vlan_id }}"
+              managed-by: ansible
+            nad_annotations:
+              description: "VLAN {{ vlan_id }} network for VMs"
+            bridge_name: "{{ _nad_bridge_name }}"
+
+        - name: Display NAD creation result
+          ansible.builtin.debug:
+            msg: "NetworkAttachmentDefinition '{{ nad_name }}' created successfully"
+
+    - name: NetworkAttachmentDefinition already exists
+      when: nad_check.resources | length > 0
+      ansible.builtin.debug:
+        msg: "NetworkAttachmentDefinition '{{ nad_name }}' already exists, skipping creation"
+
+    - name: Provision VirtualMachine
+      ansible.builtin.include_role:
+        name: provision_vm
+      vars:
+        network_nad_name: "{{ nad_name }}"
+
+    - name: Display final summary
+      ansible.builtin.debug:
+        msg:
+          - "=== VM Environment Provisioned Successfully ==="
+          - "Cluster: {{ cluster_name }}"
+          - "Namespace: {{ namespace_name }}"
+          - "Network: {{ nad_name }} (VLAN {{ vlan_id }})"
+          - "VM: {{ vm_name }}"
+          - ""
+          - "To access the VM console:"
+          - "  $ virtctl console {{ vm_name }} -n {{ namespace_name }}"
+          - ""
+          - "To get the VM IP address:"
+          - "  $ oc get vmi {{ vm_name }} -n {{ namespace_name }} -o jsonpath='{.status.interfaces[0].ipAddress}'"
+          - ""
+          - "To check VM status:"
+          - "  $ oc get vm {{ vm_name }} -n {{ namespace_name }}"

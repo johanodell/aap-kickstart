@@ -1,0 +1,42 @@
+---
+# defaults file for provision_nad
+
+# Cluster to provision NAD in (endor or coruscant)
+cluster_name: ""
+
+# Namespace where NAD will be created
+namespace_name: ""
+
+# Name of the NetworkAttachmentDefinition
+nad_name: ""
+
+# Type of CNI plugin (bridge, macvlan, ipvlan, sriov, etc.)
+nad_type: "bridge"
+
+# Optional VLAN ID for VLAN tagging
+vlan_id: ""
+
+# Optional bridge name (for bridge type)
+bridge_name: ""
+
+# Optional custom CNI configuration (if provided, auto-generation is skipped)
+nad_config: ""
+
+# Optional labels for the NAD
+nad_labels: {}
+
+# Optional annotations for the NAD
+nad_annotations: {}
+
+# Valid CNI types
+valid_nad_types:
+  - bridge
+  - macvlan
+  - ipvlan
+  - sriov
+  - host-device
+  - ptp
+  - static
+  - tuning
+  - bandwidth
+  - firewall

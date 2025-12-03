@@ -1,0 +1,63 @@
+---
+# defaults file for provision_vm
+
+# Cluster to provision VM in (endor or coruscant)
+cluster_name: ""
+
+# Namespace where VM will be created
+namespace_name: ""
+
+# Name of the VirtualMachine
+vm_name: ""
+
+# Instance type (U-series)
+instance_type: "u1.medium"
+
+# OS preference
+preference: "rhel.9"
+
+# Boot volume source (DataSource name)
+boot_volume_source: ""
+
+# DataSource namespace (where boot volume DataSources are stored)
+datasource_namespace: "openshift-virtualization-os-images"
+
+# Root disk size
+root_disk_size: "30Gi"
+
+# NetworkAttachmentDefinition name for VM networking
+network_nad_name: ""
+
+# Whether VM should start running immediately
+vm_running: true
+
+# Optional cloud-init user data
+cloud_init_user_data: ""
+
+# Optional SSH public keys for cloud-init
+ssh_authorized_keys: []
+
+# Optional labels for the VM
+vm_labels: {}
+
+# Optional annotations for the VM
+vm_annotations: {}
+
+# Valid U-series instance types
+valid_instance_types:
+  - u1.small     # 1 vCPU, 2Gi RAM
+  - u1.medium    # 1 vCPU, 4Gi RAM
+  - u1.large     # 2 vCPU, 8Gi RAM
+  - u1.xlarge    # 4 vCPU, 16Gi RAM
+  - u1.2xlarge   # 8 vCPU, 32Gi RAM
+  - u1.4xlarge   # 16 vCPU, 64Gi RAM
+  - u1.8xlarge   # 32 vCPU, 128Gi RAM
+
+# Valid OS preferences
+valid_preferences:
+  - rhel.10
+  - rhel.9
+  - rhel.8
+  - centos.stream9
+  - centos.stream8
+  - fedora

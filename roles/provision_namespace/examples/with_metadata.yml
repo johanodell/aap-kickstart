@@ -1,0 +1,26 @@
+---
+###############################################################################
+# Example Playbook: Namespace Provisioning with Custom Metadata
+###############################################################################
+
+- name: Provision namespace with custom labels and annotations
+  hosts: localhost
+  gather_facts: true
+
+  roles:
+    - role: provision_namespace
+      vars:
+        cluster_name: coruscant
+        namespace_name: platform-services-prod
+        namespace_labels:
+          environment: production
+          team: platform
+          cost-center: engineering
+          compliance: pci-dss
+          backup: enabled
+        namespace_annotations:
+          contact: platform-team@example.com
+          ticket: JIRA-12345
+          description: Production platform services namespace
+          backup-schedule: "0 2 * * *"
+          monitoring: enabled

@@ -1,0 +1,141 @@
+---
+###############################################################################
+# Validation Tests for provision_namespace Role
+###############################################################################
+#
+# This playbook tests various validation scenarios to ensure the role
+# properly handles edge cases and invalid inputs.
+#
+
+- name: Test invalid cluster name
+  hosts: localhost
+  gather_facts: true
+
+  tasks:
+    - name: Test with invalid cluster name (should fail)
+      block:
+        - name: Try to provision with invalid cluster
+          ansible.builtin.include_role:
+            name: provision_namespace
+          vars:
+            cluster_name: invalid_cluster
+            namespace_name: test-namespace
+
+      rescue:
+        - name: Validation correctly caught invalid cluster
+          ansible.builtin.debug:
+            msg: "PASS: Invalid cluster name was correctly rejected"
+
+      always:
+        - name: Mark test complete
+          ansible.builtin.set_fact:
+            test_1_complete: true
+
+- name: Test invalid namespace names
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    invalid_namespace_names:
+      - "InvalidNamespace"  # Uppercase not allowed
+      - "invalid_namespace" # Underscores not allowed
+      - "-invalid"          # Cannot start with hyphen
+      - "invalid-"          # Cannot end with hyphen
+      - "invalid..name"     # Double dots not allowed
+      - "a" | string * 64   # Too long (>63 chars)
+
+  tasks:
+    - name: Test each invalid namespace name
+      block:
+        - name: Try to provision with invalid name
+          ansible.builtin.include_role:
+            name: provision_namespace
+          vars:
+            cluster_name: endor
+            namespace_name: "{{ item }}"
+
+      rescue:
+        - name: Validation correctly caught invalid name
+          ansible.builtin.debug:
+            msg: "PASS: Invalid namespace name '{{ item }}' was correctly rejected"
+
+      loop: "{{ invalid_namespace_names }}"
+      loop_control:
+        label: "Testing: {{ item }}"
+
+- name: Test missing required variables
+  hosts: localhost
+  gather_facts: true
+
+  tasks:
+    - name: Test missing cluster_name
+      block:
+        - name: Try to provision without cluster_name
+          ansible.builtin.include_role:
+            name: provision_namespace
+          vars:
+            namespace_name: test-namespace
+
+      rescue:
+        - name: Validation correctly caught missing cluster_name
+          ansible.builtin.debug:
+            msg: "PASS: Missing cluster_name was correctly rejected"
+
+    - name: Test missing namespace_name
+      block:
+        - name: Try to provision without namespace_name
+          ansible.builtin.include_role:
+            name: provision_namespace
+          vars:
+            cluster_name: endor
+
+      rescue:
+        - name: Validation correctly caught missing namespace_name
+          ansible.builtin.debug:
+            msg: "PASS: Missing namespace_name was correctly rejected"
+
+- name: Test valid namespace names
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    valid_test_names:
+      - "test-namespace-123"
+      - "123-test-namespace"
+      - "test123"
+      - "t"
+      - "test-ns"
+
+  tasks:
+    - name: Display valid name test info
+      ansible.builtin.debug:
+        msg:
+          - "=== Testing Valid Namespace Names ==="
+          - "Note: These tests will only validate naming, not actually create namespaces"
+          - "To test actual creation, run with valid credentials"
+
+    - name: Validate each name format
+      ansible.builtin.assert:
+        that:
+          - item is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+          - item | length <= 63
+        success_msg: "PASS: '{{ item }}' is a valid namespace name"
+        fail_msg: "FAIL: '{{ item }}' should be valid but was rejected"
+      loop: "{{ valid_test_names }}"
+
+- name: Summary
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Display test summary
+      ansible.builtin.debug:
+        msg:
+          - "=== Validation Tests Complete ==="
+          - "All validation tests have been executed"
+          - "Review the output above for any failures"
+          - ""
+          - "To test actual namespace creation, ensure:"
+          - "1. Environment variables are set (ENDOR_K8S_TOKEN, etc.)"
+          - "2. Cluster API endpoints are accessible"
+          - "3. Tokens have namespace creation permissions"

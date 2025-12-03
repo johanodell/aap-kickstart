@@ -1,0 +1,30 @@
+---
+galaxy_info:
+  author: Johan Odell
+  description: Ansible role for provisioning VirtualMachines in OpenShift Virtualization
+  company: Red Hat
+
+  license: Apache-2.0
+
+  min_ansible_version: "2.15"
+
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+
+  galaxy_tags:
+    - openshift
+    - kubernetes
+    - virtualization
+    - kubevirt
+    - vm
+    - rhel
+    - cloud
+
+dependencies: []
+
+collections:
+  - kubernetes.core
+  - ansible.builtin

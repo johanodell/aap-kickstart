@@ -1,0 +1,45 @@
+---
+###############################################################################
+# Example Playbook: Provisioning Namespaces with Loop
+###############################################################################
+
+- name: Provision multiple namespaces using loop
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    namespaces_to_provision:
+      - cluster: endor
+        name: app1-dev
+        labels:
+          environment: development
+          application: app1
+      - cluster: endor
+        name: app2-dev
+        labels:
+          environment: development
+          application: app2
+      - cluster: coruscant
+        name: app1-prod
+        labels:
+          environment: production
+          application: app1
+          backup: enabled
+      - cluster: coruscant
+        name: app2-prod
+        labels:
+          environment: production
+          application: app2
+          backup: enabled
+
+  tasks:
+    - name: Provision namespaces from list
+      ansible.builtin.include_role:
+        name: provision_namespace
+      vars:
+        cluster_name: "{{ item.cluster }}"
+        namespace_name: "{{ item.name }}"
+        namespace_labels: "{{ item.labels }}"
+      loop: "{{ namespaces_to_provision }}"
+      loop_control:
+        label: "{{ item.name }} on {{ item.cluster }}"

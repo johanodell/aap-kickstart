@@ -1,0 +1,496 @@
+---
+###############################################################################
+# Provision OpenShift NetworkAttachmentDefinition Playbook
+###############################################################################
+#
+# Purpose:
+#   Creates a NetworkAttachmentDefinition (NAD) resource in either the endor
+#   or coruscant OpenShift cluster for Multus CNI multi-network support.
+#
+# Background:
+#   NetworkAttachmentDefinition is a custom resource from the k8s.cni.cncf.io
+#   API that enables pods to attach to additional networks beyond the default
+#   pod network. This is commonly used for:
+#   - SR-IOV networks for high-performance networking
+#   - Bridge networks for VM-style networking
+#   - MACVLAN/IPVLAN for direct network access
+#   - VLAN-tagged networks for network segmentation
+#
+# Requirements:
+#   - kubernetes.core collection installed
+#   - Multus CNI installed in the target cluster
+#   - AAP Custom Credentials configured with environment variables:
+#     * ENDOR_K8S_TOKEN: Bearer token for endor cluster
+#     * CORUSCANT_K8S_TOKEN: Bearer token for coruscant cluster
+#     * ENDOR_API_URL: API URL for endor cluster
+#     * CORUSCANT_API_URL: API URL for coruscant cluster
+#
+# AAP Survey Variables:
+#   - cluster_name: (required) Target cluster (endor or coruscant)
+#   - namespace_name: (required) Namespace where NAD will be created
+#   - nad_name: (required) Name of the NetworkAttachmentDefinition
+#   - nad_type: (optional) CNI plugin type (bridge, macvlan, ipvlan, sriov)
+#               Default: bridge
+#   - bridge_name: (optional) Bridge interface name for bridge type
+#                  Default: br-{{ nad_name }}
+#   - vlan_id: (optional) VLAN ID for VLAN tagging (0-4094)
+#   - ipam_type: (optional) IPAM plugin type (static, dhcp, host-local, whereabouts)
+#                Default: {} (empty/none)
+#   - nad_config: (optional) Full CNI config as JSON string (overrides all other config)
+#   - nad_labels: (optional) Dictionary of labels to apply
+#   - nad_annotations: (optional) Dictionary of annotations to apply
+#
+# Example AAP Survey Configuration:
+#   Question 1: Cluster Name
+#     Variable: cluster_name
+#     Type: Multiple Choice
+#     Choices: endor, coruscant
+#
+#   Question 2: Namespace Name
+#     Variable: namespace_name
+#     Type: Text
+#     Validation: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+#
+#   Question 3: NAD Name
+#     Variable: nad_name
+#     Type: Text
+#     Validation: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+#
+#   Question 4: Network Type
+#     Variable: nad_type
+#     Type: Multiple Choice
+#     Choices: bridge, macvlan, ipvlan, sriov
+#     Default: bridge
+#
+#   Question 5: VLAN ID (Optional)
+#     Variable: vlan_id
+#     Type: Integer
+#     Min: 0
+#     Max: 4094
+#
+# Usage Examples:
+#
+#   # Basic bridge network with VLAN
+#   ansible-playbook provision-nad.yaml \
+#     -e cluster_name=endor \
+#     -e namespace_name=my-app-dev \
+#     -e nad_name=vlan100 \
+#     -e nad_type=bridge \
+#     -e vlan_id=100
+#
+#   # MACVLAN network
+#   ansible-playbook provision-nad.yaml \
+#     -e cluster_name=coruscant \
+#     -e namespace_name=vm-workloads \
+#     -e nad_name=macvlan-net \
+#     -e nad_type=macvlan
+#
+#   # Custom CNI configuration
+#   ansible-playbook provision-nad.yaml \
+#     -e cluster_name=endor \
+#     -e namespace_name=my-app \
+#     -e nad_name=custom-net \
+#     -e nad_config='{"cniVersion":"0.3.1","type":"bridge","bridge":"br0","ipam":{}}'
+#
+###############################################################################
+
+- name: Provision OpenShift NetworkAttachmentDefinition
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    # Default values for optional parameters
+    nad_labels: {}
+    nad_annotations: {}
+    nad_type: bridge
+    bridge_name: "br-{{ nad_name }}"
+    vlan_id: null
+    ipam_type: ""
+    nad_config: ""
+
+    # Cluster configuration mapping
+    # These reference environment variables injected by AAP credentials
+    cluster_configs:
+      endor:
+        api_url: "{{ lookup('env', 'ENDOR_API_URL') }}"
+        token: "{{ lookup('env', 'ENDOR_K8S_TOKEN') }}"
+      coruscant:
+        api_url: "{{ lookup('env', 'CORUSCANT_API_URL') }}"
+        token: "{{ lookup('env', 'CORUSCANT_K8S_TOKEN') }}"
+
+    # Supported CNI types and their configurations
+    supported_cni_types:
+      - bridge
+      - macvlan
+      - ipvlan
+      - sriov
+      - host-device
+      - ptp
+      - vlan
+
+  pre_tasks:
+    - name: Validate required variables are provided
+      ansible.builtin.assert:
+        that:
+          - cluster_name is defined
+          - cluster_name != ''
+          - namespace_name is defined
+          - namespace_name != ''
+          - nad_name is defined
+          - nad_name != ''
+        fail_msg: >
+          Required variables missing. Please provide cluster_name, namespace_name, and nad_name.
+        quiet: true
+
+    - name: Validate cluster_name is a valid cluster
+      ansible.builtin.assert:
+        that:
+          - cluster_name in ['endor', 'coruscant']
+        fail_msg: >
+          Invalid cluster_name '{{ cluster_name }}'. Must be either 'endor' or 'coruscant'.
+        quiet: true
+
+    - name: Validate namespace_name follows Kubernetes naming conventions
+      ansible.builtin.assert:
+        that:
+          - namespace_name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+          - namespace_name | length <= 63
+        fail_msg: >
+          Invalid namespace_name '{{ namespace_name }}'. Must:
+          - Start with lowercase letter or number
+          - Contain only lowercase letters, numbers, and hyphens
+          - End with lowercase letter or number
+          - Be 63 characters or less
+        quiet: true
+
+    - name: Validate nad_name follows Kubernetes naming conventions
+      ansible.builtin.assert:
+        that:
+          - nad_name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+          - nad_name | length <= 63
+        fail_msg: >
+          Invalid nad_name '{{ nad_name }}'. Must:
+          - Start with lowercase letter or number
+          - Contain only lowercase letters, numbers, and hyphens
+          - End with lowercase letter or number
+          - Be 63 characters or less
+        quiet: true
+
+    - name: Validate nad_type is supported
+      ansible.builtin.assert:
+        that:
+          - nad_type in supported_cni_types
+        fail_msg: >
+          Invalid nad_type '{{ nad_type }}'. Supported types: {{ supported_cni_types | join(', ') }}
+        quiet: true
+      when: nad_config == ''
+
+    - name: Validate vlan_id range if provided
+      ansible.builtin.assert:
+        that:
+          - vlan_id | int >= 0
+          - vlan_id | int <= 4094
+        fail_msg: >
+          Invalid vlan_id '{{ vlan_id }}'. Must be between 0 and 4094.
+        quiet: true
+      when:
+        - vlan_id is defined
+        - vlan_id != None
+        - vlan_id != ''
+
+    - name: Set cluster configuration facts
+      ansible.builtin.set_fact:
+        openshift_api_url: "{{ cluster_configs[cluster_name].api_url }}"
+        openshift_token: "{{ cluster_configs[cluster_name].token }}"
+        cacheable: false
+      no_log: true
+
+    - name: Validate cluster credentials are available
+      ansible.builtin.assert:
+        that:
+          - openshift_api_url is defined
+          - openshift_api_url != ''
+          - openshift_token is defined
+          - openshift_token != ''
+        fail_msg: >
+          Missing credentials for cluster '{{ cluster_name }}'.
+          Ensure the following environment variables are set:
+          - {{ cluster_name | upper }}_API_URL
+          - {{ cluster_name | upper }}_K8S_TOKEN
+        quiet: true
+
+    - name: Display operation summary
+      ansible.builtin.debug:
+        msg:
+          - "=== NetworkAttachmentDefinition Provisioning Operation ==="
+          - "Target Cluster: {{ cluster_name }}"
+          - "Namespace: {{ namespace_name }}"
+          - "NAD Name: {{ nad_name }}"
+          - "API URL: {{ openshift_api_url }}"
+          - "CNI Type: {{ nad_type if nad_config == '' else 'Custom Configuration' }}"
+          - "VLAN ID: {{ vlan_id if vlan_id else 'None' }}"
+          - "Labels: {{ nad_labels if nad_labels else 'None' }}"
+          - "Annotations: {{ nad_annotations if nad_annotations else 'None' }}"
+
+  tasks:
+    - name: Provision NetworkAttachmentDefinition with error handling
+      block:
+        - name: Verify target namespace exists
+          kubernetes.core.k8s_info:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            kind: Namespace
+            name: "{{ namespace_name }}"
+          register: namespace_check
+
+        - name: Validate namespace exists
+          ansible.builtin.assert:
+            that:
+              - namespace_check.resources | length > 0
+            fail_msg: >
+              Namespace '{{ namespace_name }}' does not exist in cluster '{{ cluster_name }}'.
+              Please create the namespace first before provisioning the NAD.
+            quiet: true
+
+        - name: Prepare standard annotations
+          ansible.builtin.set_fact:
+            standard_annotations:
+              openshift.io/description: "NetworkAttachmentDefinition provisioned by Ansible Automation Platform"
+              provisioned-date: "{{ ansible_date_time.iso8601 }}"
+              provisioned-cluster: "{{ cluster_name }}"
+              cni-type: "{{ nad_type if nad_config == '' else 'custom' }}"
+
+        - name: Prepare standard labels
+          ansible.builtin.set_fact:
+            standard_labels:
+              provisioned-by: "ansible-aap"
+              network-type: "{{ nad_type if nad_config == '' else 'custom' }}"
+
+        - name: Merge user-provided labels with standard labels
+          ansible.builtin.set_fact:
+            final_labels: "{{ nad_labels | combine(standard_labels) }}"
+
+        - name: Merge user-provided annotations with standard annotations
+          ansible.builtin.set_fact:
+            final_annotations: "{{ nad_annotations | combine(standard_annotations) }}"
+
+        - name: Build CNI configuration for bridge type
+          ansible.builtin.set_fact:
+            generated_nad_config:
+              cniVersion: "0.3.1"
+              type: "{{ nad_type }}"
+              bridge: "{{ bridge_name }}"
+              ipam: {}
+          when:
+            - nad_config == ''
+            - nad_type == 'bridge'
+
+        - name: Add VLAN to bridge configuration if specified
+          ansible.builtin.set_fact:
+            generated_nad_config: "{{ generated_nad_config | combine({'vlan': vlan_id | int}) }}"
+          when:
+            - nad_config == ''
+            - nad_type == 'bridge'
+            - vlan_id is defined
+            - vlan_id != None
+            - vlan_id != ''
+
+        - name: Build CNI configuration for macvlan type
+          ansible.builtin.set_fact:
+            generated_nad_config:
+              cniVersion: "0.3.1"
+              type: "macvlan"
+              master: "eth0"
+              mode: "bridge"
+              ipam: {}
+          when:
+            - nad_config == ''
+            - nad_type == 'macvlan'
+
+        - name: Add VLAN to macvlan configuration if specified
+          ansible.builtin.set_fact:
+            generated_nad_config: "{{ generated_nad_config | combine({'vlan': vlan_id | int}) }}"
+          when:
+            - nad_config == ''
+            - nad_type == 'macvlan'
+            - vlan_id is defined
+            - vlan_id != None
+            - vlan_id != ''
+
+        - name: Build CNI configuration for ipvlan type
+          ansible.builtin.set_fact:
+            generated_nad_config:
+              cniVersion: "0.3.1"
+              type: "ipvlan"
+              master: "eth0"
+              mode: "l2"
+              ipam: {}
+          when:
+            - nad_config == ''
+            - nad_type == 'ipvlan'
+
+        - name: Build CNI configuration for sriov type
+          ansible.builtin.set_fact:
+            generated_nad_config:
+              cniVersion: "0.3.1"
+              type: "sriov"
+              ipam: {}
+          when:
+            - nad_config == ''
+            - nad_type == 'sriov'
+
+        - name: Build CNI configuration for host-device type
+          ansible.builtin.set_fact:
+            generated_nad_config:
+              cniVersion: "0.3.1"
+              type: "host-device"
+              device: "eth0"
+              ipam: {}
+          when:
+            - nad_config == ''
+            - nad_type == 'host-device'
+
+        - name: Build CNI configuration for ptp type
+          ansible.builtin.set_fact:
+            generated_nad_config:
+              cniVersion: "0.3.1"
+              type: "ptp"
+              ipam: {}
+          when:
+            - nad_config == ''
+            - nad_type == 'ptp'
+
+        - name: Build CNI configuration for vlan type
+          ansible.builtin.set_fact:
+            generated_nad_config:
+              cniVersion: "0.3.1"
+              type: "vlan"
+              master: "eth0"
+              vlanId: "{{ vlan_id | int }}"
+              ipam: {}
+          when:
+            - nad_config == ''
+            - nad_type == 'vlan'
+
+        - name: Set final CNI configuration (use custom if provided, otherwise generated)
+          ansible.builtin.set_fact:
+            final_nad_config: "{{ nad_config if nad_config != '' else generated_nad_config | to_json }}"
+
+        - name: Display CNI configuration that will be applied
+          ansible.builtin.debug:
+            msg:
+              - "=== CNI Configuration ==="
+              - "{{ final_nad_config }}"
+
+        - name: Validate CNI configuration is valid JSON
+          ansible.builtin.set_fact:
+            validated_config: "{{ final_nad_config | from_json }}"
+          register: json_validation
+
+        - name: Create NetworkAttachmentDefinition in OpenShift cluster
+          redhat.openshift.k8s:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            state: present
+            definition:
+              apiVersion: k8s.cni.cncf.io/v1
+              kind: NetworkAttachmentDefinition
+              metadata:
+                name: "{{ nad_name }}"
+                namespace: "{{ namespace_name }}"
+                labels: "{{ final_labels }}"
+                annotations: "{{ final_annotations }}"
+              spec:
+                config: "{{ final_nad_config }}"
+          register: nad_result
+
+        - name: Verify NetworkAttachmentDefinition was created
+          kubernetes.core.k8s_info:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            api_version: k8s.cni.cncf.io/v1
+            kind: NetworkAttachmentDefinition
+            name: "{{ nad_name }}"
+            namespace: "{{ namespace_name }}"
+          register: nad_info
+
+        - name: Display operation result
+          ansible.builtin.debug:
+            msg:
+              - "=== Operation Completed Successfully ==="
+              - "Cluster: {{ cluster_name }}"
+              - "Namespace: {{ namespace_name }}"
+              - "NAD Name: {{ nad_name }}"
+              - "Created: {{ nad_result.changed | ternary('Yes (new)', 'No (already exists)') }}"
+              - "UID: {{ nad_info.resources[0].metadata.uid }}"
+              - "CNI Type: {{ validated_config.type }}"
+              - "CNI Version: {{ validated_config.cniVersion }}"
+
+        - name: Display usage instructions
+          ansible.builtin.debug:
+            msg:
+              - "=== Usage Instructions ==="
+              - "To attach this network to a VM, add it to the VM's network interfaces:"
+              - ""
+              - "Example VirtualMachine specification:"
+              - "  apiVersion: kubevirt.io/v1"
+              - "  kind: VirtualMachine"
+              - "  metadata:"
+              - "    name: my-vm"
+              - "    namespace: {{ namespace_name }}"
+              - "  spec:"
+              - "    template:"
+              - "      spec:"
+              - "        networks:"
+              - "        - name: default"
+              - "          pod: {}"
+              - "        - name: {{ nad_name }}"
+              - "          multus:"
+              - "            networkName: {{ nad_name }}"
+              - "        domain:"
+              - "          devices:"
+              - "            interfaces:"
+              - "            - name: default"
+              - "              masquerade: {}"
+              - "            - name: {{ nad_name }}"
+              - "              bridge: {}"
+
+      rescue:
+        - name: Handle NAD creation failure
+          ansible.builtin.debug:
+            msg:
+              - "=== Operation Failed ==="
+              - "Cluster: {{ cluster_name }}"
+              - "Namespace: {{ namespace_name }}"
+              - "NAD Name: {{ nad_name }}"
+              - "Error: See above for details"
+
+        - name: Fail with clear error message
+          ansible.builtin.fail:
+            msg: >
+              Failed to provision NetworkAttachmentDefinition '{{ nad_name }}'
+              in namespace '{{ namespace_name }}' on cluster '{{ cluster_name }}'.
+              Please check the error details above and verify:
+              1. Cluster credentials are correct
+              2. The namespace exists
+              3. You have permissions to create NetworkAttachmentDefinitions
+              4. Multus CNI is installed in the cluster
+              5. The CNI configuration is valid
+              6. The cluster API is accessible
+
+  post_tasks:
+    - name: Set operation statistics for AAP reporting
+      ansible.builtin.set_stats:
+        data:
+          nad_created: "{{ nad_result.changed | default(false) }}"
+          nad_name: "{{ nad_name }}"
+          namespace_name: "{{ namespace_name }}"
+          target_cluster: "{{ cluster_name }}"
+          cni_type: "{{ validated_config.type | default('unknown') }}"
+          cni_version: "{{ validated_config.cniVersion | default('unknown') }}"
+          vlan_configured: "{{ (vlan_id is defined and vlan_id != None and vlan_id != '') | ternary('yes', 'no') }}"
+          operation_timestamp: "{{ ansible_date_time.iso8601 }}"
+      when: nad_result is defined

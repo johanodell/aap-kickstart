@@ -1,0 +1,209 @@
+---
+###############################################################################
+# Provision OpenShift Namespace Playbook
+###############################################################################
+#
+# Purpose:
+#   Creates a namespace (project) in either the endor or coruscant OpenShift
+#   cluster using cluster-specific bearer tokens.
+#
+# Requirements:
+#   - kubernetes.core collection installed
+#   - AAP Custom Credentials configured with environment variables:
+#     * ENDOR_K8S_TOKEN: Bearer token for endor cluster
+#     * CORUSCANT_K8S_TOKEN: Bearer token for coruscant cluster
+#     * ENDOR_API_URL: API URL for endor cluster
+#     * CORUSCANT_API_URL: API URL for coruscant cluster
+#
+# AAP Survey Variables:
+#   - cluster_name: (required) Target cluster (endor or coruscant)
+#   - namespace_name: (required) Name of the namespace to create
+#   - namespace_labels: (optional) Dictionary of labels to apply
+#   - namespace_annotations: (optional) Dictionary of annotations to apply
+#
+# Example AAP Survey Configuration:
+#   Question 1: Cluster Name
+#     Variable: cluster_name
+#     Type: Multiple Choice
+#     Choices: endor, coruscant
+#
+#   Question 2: Namespace Name
+#     Variable: namespace_name
+#     Type: Text
+#     Validation: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+#
+# Usage:
+#   ansible-playbook provision-namespace.yaml \
+#     -e cluster_name=endor \
+#     -e namespace_name=my-app-dev
+#
+###############################################################################
+
+- name: Provision OpenShift Namespace
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    # Default empty dictionaries for optional parameters
+    namespace_labels: {}
+    namespace_annotations: {}
+
+    # Cluster configuration mapping
+    # These reference environment variables injected by AAP credentials
+    cluster_configs:
+      endor:
+        api_url: "{{ lookup('env', 'ENDOR_API_URL') }}"
+        token: "{{ lookup('env', 'ENDOR_K8S_TOKEN') }}"
+      coruscant:
+        api_url: "{{ lookup('env', 'CORUSCANT_API_URL') }}"
+        token: "{{ lookup('env', 'CORUSCANT_K8S_TOKEN') }}"
+
+  pre_tasks:
+    - name: Validate required variables are provided
+      ansible.builtin.assert:
+        that:
+          - cluster_name is defined
+          - cluster_name != ''
+          - namespace_name is defined
+          - namespace_name != ''
+        fail_msg: >
+          Required variables missing. Please provide both cluster_name and namespace_name.
+        quiet: true
+
+    - name: Validate cluster_name is a valid cluster
+      ansible.builtin.assert:
+        that:
+          - cluster_name in ['endor', 'coruscant']
+        fail_msg: >
+          Invalid cluster_name '{{ cluster_name }}'. Must be either 'endor' or 'coruscant'.
+        quiet: true
+
+    - name: Validate namespace_name follows Kubernetes naming conventions
+      ansible.builtin.assert:
+        that:
+          - namespace_name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+          - namespace_name | length <= 63
+        fail_msg: >
+          Invalid namespace_name '{{ namespace_name }}'. Must:
+          - Start with lowercase letter or number
+          - Contain only lowercase letters, numbers, and hyphens
+          - End with lowercase letter or number
+          - Be 63 characters or less
+        quiet: true
+
+    - name: Set cluster configuration facts
+      ansible.builtin.set_fact:
+        openshift_api_url: "{{ cluster_configs[cluster_name].api_url }}"
+        openshift_token: "{{ cluster_configs[cluster_name].token }}"
+        cacheable: false
+      no_log: true
+
+    - name: Validate cluster credentials are available
+      ansible.builtin.assert:
+        that:
+          - openshift_api_url is defined
+          - openshift_api_url != ''
+          - openshift_token is defined
+          - openshift_token != ''
+        fail_msg: >
+          Missing credentials for cluster '{{ cluster_name }}'.
+          Ensure the following environment variables are set:
+          - {{ cluster_name | upper }}_API_URL
+          - {{ cluster_name | upper }}_K8S_TOKEN
+        quiet: true
+
+    - name: Display operation summary
+      ansible.builtin.debug:
+        msg:
+          - "=== Namespace Provisioning Operation ==="
+          - "Target Cluster: {{ cluster_name }}"
+          - "Namespace: {{ namespace_name }}"
+          - "API URL: {{ openshift_api_url }}"
+          - "Labels: {{ namespace_labels if namespace_labels else 'None' }}"
+          - "Annotations: {{ namespace_annotations if namespace_annotations else 'None' }}"
+
+  tasks:
+    - name: Provision namespace with error handling
+      block:
+        - name: Prepare standard annotations
+          ansible.builtin.set_fact:
+            standard_annotations:
+              openshift.io/description: "Namespace provisioned by Ansible Automation Platform"
+              provisioned-date: "{{ ansible_date_time.iso8601 }}"
+              provisioned-cluster: "{{ cluster_name }}"
+
+        - name: Prepare standard labels
+          ansible.builtin.set_fact:
+            standard_labels:
+              provisioned-by: "ansible-aap"
+
+        - name: Merge user-provided labels with standard labels
+          ansible.builtin.set_fact:
+            final_labels: "{{ namespace_labels | combine(standard_labels) }}"
+
+        - name: Merge user-provided annotations with standard annotations
+          ansible.builtin.set_fact:
+            final_annotations: "{{ namespace_annotations | combine(standard_annotations) }}"
+
+        - name: Create namespace in OpenShift cluster
+          redhat.openshift.k8s:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_name }}"
+                labels: "{{ final_labels }}"
+                annotations: "{{ final_annotations }}"
+          register: namespace_result
+
+        - name: Verify namespace was created
+          kubernetes.core.k8s_info:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            kind: Namespace
+            name: "{{ namespace_name }}"
+          register: namespace_info
+
+        - name: Display operation result
+          ansible.builtin.debug:
+            msg:
+              - "=== Operation Completed Successfully ==="
+              - "Cluster: {{ cluster_name }}"
+              - "Namespace: {{ namespace_name }}"
+              - "Status: {{ namespace_info.resources[0].status.phase }}"
+              - "Created: {{ namespace_result.changed | ternary('Yes (new)', 'No (already exists)') }}"
+              - "UID: {{ namespace_info.resources[0].metadata.uid }}"
+
+      rescue:
+        - name: Handle namespace creation failure
+          ansible.builtin.debug:
+            msg:
+              - "=== Operation Failed ==="
+              - "Cluster: {{ cluster_name }}"
+              - "Namespace: {{ namespace_name }}"
+              - "Error: See above for details"
+
+        - name: Fail with clear error message
+          ansible.builtin.fail:
+            msg: >
+              Failed to provision namespace '{{ namespace_name }}' in cluster '{{ cluster_name }}'.
+              Please check the error details above and verify:
+              1. Cluster credentials are correct
+              2. You have permissions to create namespaces
+              3. The namespace name is valid
+              4. The cluster API is accessible
+
+  post_tasks:
+    - name: Set operation statistics
+      ansible.builtin.set_stats:
+        data:
+          namespace_created: "{{ namespace_result.changed | default(false) }}"
+          namespace_name: "{{ namespace_name }}"
+          target_cluster: "{{ cluster_name }}"
+          operation_timestamp: "{{ ansible_date_time.iso8601 }}"
+      when: namespace_result is defined

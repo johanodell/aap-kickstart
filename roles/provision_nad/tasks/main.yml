@@ -1,0 +1,178 @@
+---
+# tasks file for provision_nad
+
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - cluster_name is defined and cluster_name | length > 0
+      - namespace_name is defined and namespace_name | length > 0
+      - nad_name is defined and nad_name | length > 0
+      - nad_type is defined and nad_type | length > 0
+    fail_msg: "Required variables missing: cluster_name, namespace_name, nad_name, nad_type"
+    success_msg: "All required variables provided"
+
+- name: Validate cluster name
+  ansible.builtin.assert:
+    that:
+      - cluster_name in ['endor', 'coruscant']
+    fail_msg: "cluster_name must be 'endor' or 'coruscant'"
+    success_msg: "Cluster name '{{ cluster_name }}' is valid"
+
+- name: Validate NAD type
+  ansible.builtin.assert:
+    that:
+      - nad_type in valid_nad_types
+    fail_msg: "nad_type must be one of: {{ valid_nad_types | join(', ') }}"
+    success_msg: "NAD type '{{ nad_type }}' is valid"
+
+- name: Set cluster-specific facts
+  ansible.builtin.set_fact:
+    k8s_host: "{{ lookup('env', cluster_name | upper + '_API_URL') }}"
+    k8s_api_key: "{{ lookup('env', cluster_name | upper + '_K8S_TOKEN') }}"
+    k8s_verify_ssl: "{{ lookup('env', cluster_name | upper + '_VERIFY_SSL') | default('true') }}"
+    k8s_ca_cert: "{{ lookup('env', cluster_name | upper + '_CA_CERT') | default('') }}"
+
+- name: Validate cluster credentials
+  ansible.builtin.assert:
+    that:
+      - k8s_host | length > 0
+      - k8s_api_key | length > 0
+    fail_msg: "Cluster credentials not found. Ensure {{ cluster_name | upper }}_API_URL and {{ cluster_name | upper }}_K8S_TOKEN are set"
+    success_msg: "Cluster credentials validated for {{ cluster_name }}"
+
+- name: Verify namespace exists
+  kubernetes.core.k8s_info:
+    host: "{{ k8s_host }}"
+    api_key: "{{ k8s_api_key }}"
+    validate_certs: "{{ k8s_verify_ssl | bool }}"
+    ca_cert: "{{ k8s_ca_cert if k8s_ca_cert | length > 0 else omit }}"
+    kind: Namespace
+    name: "{{ namespace_name }}"
+  register: namespace_check
+  failed_when: namespace_check.resources | length == 0
+
+- name: Auto-generate CNI configuration (bridge)
+  when:
+    - nad_config == ""
+    - nad_type == "bridge"
+  block:
+    - name: Generate bridge CNI config
+      ansible.builtin.set_fact:
+        generated_nad_config: |
+          {
+            "cniVersion": "0.3.1",
+            "name": "{{ nad_name }}",
+            "type": "bridge",
+            "bridge": "{{ bridge_name | default('br-' + nad_name) }}",
+            "ipam": {}{% if vlan_id | length > 0 %},
+            "vlan": {{ vlan_id }}{% endif %}
+          }
+
+    - name: Set NAD config from generated bridge config
+      ansible.builtin.set_fact:
+        nad_config: "{{ generated_nad_config }}"
+
+- name: Auto-generate CNI configuration (macvlan)
+  when:
+    - nad_config == ""
+    - nad_type == "macvlan"
+  block:
+    - name: Generate macvlan CNI config
+      ansible.builtin.set_fact:
+        generated_nad_config: |
+          {
+            "cniVersion": "0.3.1",
+            "name": "{{ nad_name }}",
+            "type": "macvlan",
+            "master": "{{ bridge_name | default('eth0') }}",
+            "mode": "bridge",
+            "ipam": {}{% if vlan_id | length > 0 %},
+            "vlan": {{ vlan_id }}{% endif %}
+          }
+
+    - name: Set NAD config from generated macvlan config
+      ansible.builtin.set_fact:
+        nad_config: "{{ generated_nad_config }}"
+
+- name: Auto-generate CNI configuration (ipvlan)
+  when:
+    - nad_config == ""
+    - nad_type == "ipvlan"
+  block:
+    - name: Generate ipvlan CNI config
+      ansible.builtin.set_fact:
+        generated_nad_config: |
+          {
+            "cniVersion": "0.3.1",
+            "name": "{{ nad_name }}",
+            "type": "ipvlan",
+            "master": "{{ bridge_name | default('eth0') }}",
+            "mode": "l2",
+            "ipam": {}{% if vlan_id | length > 0 %},
+            "vlan": {{ vlan_id }}{% endif %}
+          }
+
+    - name: Set NAD config from generated ipvlan config
+      ansible.builtin.set_fact:
+        nad_config: "{{ generated_nad_config }}"
+
+- name: Validate NAD config is provided
+  ansible.builtin.assert:
+    that:
+      - nad_config | length > 0
+    fail_msg: "nad_config must be provided for nad_type '{{ nad_type }}' (auto-generation not available)"
+    success_msg: "NAD configuration validated"
+
+- name: Create NetworkAttachmentDefinition
+  redhat.openshift.k8s:
+    host: "{{ k8s_host }}"
+    api_key: "{{ k8s_api_key }}"
+    validate_certs: "{{ k8s_verify_ssl | bool }}"
+    ca_cert: "{{ k8s_ca_cert if k8s_ca_cert | length > 0 else omit }}"
+    state: present
+    definition:
+      apiVersion: k8s.cni.cncf.io/v1
+      kind: NetworkAttachmentDefinition
+      metadata:
+        name: "{{ nad_name }}"
+        namespace: "{{ namespace_name }}"
+        labels: "{{ nad_labels | combine({'managed-by': 'ansible'}) }}"
+        annotations: "{{ nad_annotations }}"
+      spec:
+        config: "{{ nad_config | to_json }}"
+  register: nad_result
+
+- name: Display NAD creation result
+  ansible.builtin.debug:
+    msg:
+      - "=== NetworkAttachmentDefinition Created ==="
+      - "Cluster: {{ cluster_name }}"
+      - "Namespace: {{ namespace_name }}"
+      - "NAD Name: {{ nad_name }}"
+      - "CNI Type: {{ nad_type }}"
+      - "Status: {{ 'Created' if nad_result.changed else 'Already exists' }}"
+
+- name: Display usage instructions
+  ansible.builtin.debug:
+    msg:
+      - "=== Usage Instructions ==="
+      - "To attach this network to a VM, add it to the VM's network interfaces:"
+      - ""
+      - "Example VirtualMachine specification:"
+      - "  apiVersion: kubevirt.io/v1"
+      - "  kind: VirtualMachine"
+      - "  metadata:"
+      - "    name: my-vm"
+      - "    namespace: {{ namespace_name }}"
+      - "  spec:"
+      - "    template:"
+      - "      spec:"
+      - "        networks:"
+      - "        - name: {{ nad_name }}"
+      - "          multus:"
+      - "            networkName: {{ nad_name }}"
+      - "        domain:"
+      - "          devices:"
+      - "            interfaces:"
+      - "            - name: {{ nad_name }}"
+      - "              bridge: {}"

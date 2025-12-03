@@ -1,0 +1,20 @@
+---
+###############################################################################
+# Internal Variables for provision_namespace Role
+###############################################################################
+#
+# These variables are for internal role use and should not be overridden.
+# They are set during role execution and maintain state.
+#
+
+# Internal variables will be set at runtime:
+# - provision_namespace_api_url
+# - provision_namespace_token
+# - provision_namespace_final_labels
+# - provision_namespace_final_annotations
+# - provision_namespace_runtime_annotations
+# - provision_namespace_result
+# - provision_namespace_info
+
+# This file is intentionally minimal as most internal variables
+# are computed dynamically during task execution.

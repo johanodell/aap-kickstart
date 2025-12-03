@@ -1,0 +1,12 @@
+---
+###############################################################################
+# Collection Requirements for provision_namespace Role
+###############################################################################
+
+collections:
+  - name: kubernetes.core
+    version: ">=2.4.0"
+    source: https://galaxy.ansible.com
+
+  - name: ansible.builtin
+    version: ">=2.14.0"

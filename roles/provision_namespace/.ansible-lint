@@ -1,0 +1,30 @@
+---
+###############################################################################
+# Ansible Lint Configuration for provision_namespace Role
+###############################################################################
+
+profile: production
+
+exclude_paths:
+  - .cache/
+  - .git/
+  - tests/output/
+
+skip_list:
+  - yaml[line-length]  # Allow longer lines for documentation
+
+warn_list:
+  - experimental
+  - role-name
+
+# Enable offline mode for CI/CD environments
+# offline: true
+
+# Kinds of YAML files to lint
+kinds:
+  - yaml: "*.yaml"
+  - yaml: "*.yml"
+  - yaml: ".yamllint"
+
+# Strict mode fails on warnings
+# strict: true

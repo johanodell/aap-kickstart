@@ -1,0 +1,91 @@
+---
+###############################################################################
+# Default Variables for provision_namespace Role
+###############################################################################
+#
+# These variables can be overridden at playbook or runtime level.
+# Required variables must be provided when using the role.
+#
+
+# ------------------------------------------------------------------------------
+# Required Variables (must be set when using this role)
+# ------------------------------------------------------------------------------
+
+# cluster_name: Target cluster name (must be 'endor' or 'coruscant')
+# Example: cluster_name: endor
+
+# namespace_name: Name of the namespace to create
+# Must follow Kubernetes naming conventions:
+#   - Start with lowercase letter or number
+#   - Contain only lowercase letters, numbers, and hyphens
+#   - End with lowercase letter or number
+#   - Maximum 63 characters
+# Example: namespace_name: my-app-dev
+
+# ------------------------------------------------------------------------------
+# Optional Variables
+# ------------------------------------------------------------------------------
+
+# Custom labels to apply to the namespace
+# Standard labels (provisioned-by: ansible-aap) are automatically added
+namespace_labels: {}
+# Example:
+# namespace_labels:
+#   environment: production
+#   team: platform
+#   cost-center: engineering
+
+# Custom annotations to apply to the namespace
+# Standard annotations are automatically added:
+#   - openshift.io/description
+#   - provisioned-date
+#   - provisioned-cluster
+namespace_annotations: {}
+# Example:
+# namespace_annotations:
+#   contact: platform-team@example.com
+#   ticket: JIRA-1234
+
+# ------------------------------------------------------------------------------
+# Cluster Configuration
+# ------------------------------------------------------------------------------
+
+# Cluster configurations reference environment variables
+# These should be set via AAP Custom Credentials:
+#
+# For Endor cluster:
+#   - ENDOR_API_URL: OpenShift API URL (e.g., https://api.endor.example.com:6443)
+#   - ENDOR_K8S_TOKEN: Bearer token for authentication
+#
+# For Coruscant cluster:
+#   - CORUSCANT_API_URL: OpenShift API URL
+#   - CORUSCANT_K8S_TOKEN: Bearer token for authentication
+
+provision_namespace_cluster_configs:
+  endor:
+    api_url: "{{ lookup('env', 'ENDOR_API_URL') }}"
+    token: "{{ lookup('env', 'ENDOR_K8S_TOKEN') }}"
+  coruscant:
+    api_url: "{{ lookup('env', 'CORUSCANT_API_URL') }}"
+    token: "{{ lookup('env', 'CORUSCANT_K8S_TOKEN') }}"
+
+# ------------------------------------------------------------------------------
+# SSL Certificate Validation
+# ------------------------------------------------------------------------------
+
+# Set to true to validate SSL certificates (recommended for production)
+# Set to false for self-signed certificates or testing
+provision_namespace_validate_certs: false
+
+# ------------------------------------------------------------------------------
+# Standard Labels and Annotations
+# ------------------------------------------------------------------------------
+
+# Standard labels applied to all namespaces
+provision_namespace_standard_labels:
+  provisioned-by: "ansible-aap"
+
+# Standard annotations template (will be rendered at runtime)
+# Use Jinja2 variables that will be available during execution
+provision_namespace_standard_annotations:
+  openshift.io/description: "Namespace provisioned by Ansible Automation Platform"

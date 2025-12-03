@@ -1,0 +1,14 @@
+---
+###############################################################################
+# Example Playbook: Basic Usage of provision_namespace Role
+###############################################################################
+
+- name: Basic namespace provisioning example
+  hosts: localhost
+  gather_facts: true
+
+  roles:
+    - role: provision_namespace
+      vars:
+        cluster_name: endor
+        namespace_name: my-application-dev

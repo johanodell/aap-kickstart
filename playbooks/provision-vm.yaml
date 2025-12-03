@@ -1,0 +1,591 @@
+---
+###############################################################################
+# Provision OpenShift Virtualization VirtualMachine Playbook
+###############################################################################
+#
+# Purpose:
+#   Creates a VirtualMachine (VM) in either the endor or coruscant OpenShift
+#   cluster using OpenShift Virtualization (KubeVirt) with the instancetype/
+#   preference pattern for standardized VM configurations.
+#
+# Background:
+#   OpenShift Virtualization enables running VMs alongside containers in
+#   OpenShift. This playbook uses the modern instancetype/preference pattern
+#   instead of legacy resource requests. VMs are configured with:
+#   - DataVolumes for disk management (cloned from DataSource)
+#   - Bridge networking to NetworkAttachmentDefinition (NO pod network)
+#   - Cloud-init for guest customization
+#   - Virtio devices for optimal performance
+#
+# Requirements:
+#   - kubernetes.core collection installed
+#   - OpenShift Virtualization operator installed in target cluster
+#   - AAP Custom Credentials configured with environment variables:
+#     * ENDOR_K8S_TOKEN: Bearer token for endor cluster
+#     * CORUSCANT_K8S_TOKEN: Bearer token for coruscant cluster
+#     * ENDOR_API_URL: API URL for endor cluster
+#     * CORUSCANT_API_URL: API URL for coruscant cluster
+#
+# AAP Survey Variables:
+#   - cluster_name: (required) Target cluster (endor or coruscant)
+#   - namespace_name: (required) Namespace where VM will be created
+#   - vm_name: (required) Name of the VirtualMachine
+#   - instance_type: (required) OpenShift Virt instancetype
+#                    U-series: U1.medium, U1.large, U1.xlarge, U1.2xlarge, U1.4xlarge, U1.8xlarge
+#   - boot_volume_source: (required) DataSource or PVC name for boot disk
+#   - boot_volume_size: (required) Size for boot disk (e.g., "30Gi")
+#   - network_nad_name: (required) NetworkAttachmentDefinition name for VLAN network
+#   - network_interface_name: (optional) Network interface name (default: "vlan-nic")
+#   - preference_name: (optional) Preference name (default: "rhel.9")
+#   - cloud_init_user: (optional) Cloud-init username (default: "cloud-user")
+#   - cloud_init_password: (optional) Cloud-init password (default: "changeme")
+#   - cloud_init_ssh_key: (optional) SSH public key for cloud-init
+#   - cloud_init_hostname: (optional) VM hostname (default: vm_name)
+#   - vm_labels: (optional) Dictionary of labels to apply
+#   - vm_annotations: (optional) Dictionary of annotations to apply
+#   - auto_start: (optional) Start VM after creation (default: true)
+#
+# Example AAP Survey Configuration:
+#   Question 1: Cluster Name
+#     Variable: cluster_name
+#     Type: Multiple Choice
+#     Choices: endor, coruscant
+#
+#   Question 2: Namespace Name
+#     Variable: namespace_name
+#     Type: Text
+#     Validation: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+#
+#   Question 3: VM Name
+#     Variable: vm_name
+#     Type: Text
+#     Validation: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+#
+#   Question 4: Instance Type
+#     Variable: instance_type
+#     Type: Multiple Choice
+#     Choices: U1.medium, U1.large, U1.xlarge, U1.2xlarge, U1.4xlarge, U1.8xlarge
+#
+#   Question 5: Boot Volume Source (DataSource name)
+#     Variable: boot_volume_source
+#     Type: Text
+#
+#   Question 6: Boot Volume Size
+#     Variable: boot_volume_size
+#     Type: Text
+#     Default: 30Gi
+#
+#   Question 7: Network Attachment Definition
+#     Variable: network_nad_name
+#     Type: Text
+#
+# Usage Examples:
+#
+#   # Basic RHEL 9 VM with VLAN network
+#   ansible-playbook provision-vm.yaml \
+#     -e cluster_name=endor \
+#     -e namespace_name=my-app-dev \
+#     -e vm_name=rhel9-app01 \
+#     -e instance_type=U1.large \
+#     -e boot_volume_source=rhel9-soe \
+#     -e boot_volume_size=30Gi \
+#     -e network_nad_name=vlan100
+#
+#   # VM with custom cloud-init and SSH key
+#   ansible-playbook provision-vm.yaml \
+#     -e cluster_name=coruscant \
+#     -e namespace_name=vm-workloads \
+#     -e vm_name=web-server \
+#     -e instance_type=U1.xlarge \
+#     -e boot_volume_source=rhel9-base \
+#     -e boot_volume_size=50Gi \
+#     -e network_nad_name=vlan200 \
+#     -e cloud_init_user=admin \
+#     -e cloud_init_ssh_key="ssh-rsa AAAAB3..."
+#
+###############################################################################
+
+- name: Provision OpenShift Virtualization VirtualMachine
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    # Default values for optional parameters
+    vm_labels: {}
+    vm_annotations: {}
+    network_interface_name: "vlan-nic"
+    preference_name: "rhel.9"
+    cloud_init_user: "cloud-user"
+    cloud_init_password: "changeme"
+    cloud_init_ssh_key: ""
+    cloud_init_hostname: "{{ vm_name }}"
+    auto_start: true
+
+    # Cluster configuration mapping
+    # These reference environment variables injected by AAP credentials
+    cluster_configs:
+      endor:
+        api_url: "{{ lookup('env', 'ENDOR_API_URL') }}"
+        token: "{{ lookup('env', 'ENDOR_K8S_TOKEN') }}"
+      coruscant:
+        api_url: "{{ lookup('env', 'CORUSCANT_API_URL') }}"
+        token: "{{ lookup('env', 'CORUSCANT_K8S_TOKEN') }}"
+
+    # Supported U-series instance types
+    supported_instance_types:
+      - U1.medium
+      - U1.large
+      - U1.xlarge
+      - U1.2xlarge
+      - U1.4xlarge
+      - U1.8xlarge
+
+    # Common preference options
+    supported_preferences:
+      - rhel.9
+      - rhel.8
+      - rhel.7
+      - fedora
+      - centos.stream9
+      - windows.10
+      - windows.11
+      - windows.2k22
+
+  pre_tasks:
+    - name: Validate required variables are provided
+      ansible.builtin.assert:
+        that:
+          - cluster_name is defined
+          - cluster_name != ''
+          - namespace_name is defined
+          - namespace_name != ''
+          - vm_name is defined
+          - vm_name != ''
+          - instance_type is defined
+          - instance_type != ''
+          - boot_volume_source is defined
+          - boot_volume_source != ''
+          - boot_volume_size is defined
+          - boot_volume_size != ''
+          - network_nad_name is defined
+          - network_nad_name != ''
+        fail_msg: >
+          Required variables missing. Please provide: cluster_name, namespace_name,
+          vm_name, instance_type, boot_volume_source, boot_volume_size, network_nad_name.
+        quiet: true
+
+    - name: Validate cluster_name is a valid cluster
+      ansible.builtin.assert:
+        that:
+          - cluster_name in ['endor', 'coruscant']
+        fail_msg: >
+          Invalid cluster_name '{{ cluster_name }}'. Must be either 'endor' or 'coruscant'.
+        quiet: true
+
+    - name: Validate namespace_name follows Kubernetes naming conventions
+      ansible.builtin.assert:
+        that:
+          - namespace_name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+          - namespace_name | length <= 63
+        fail_msg: >
+          Invalid namespace_name '{{ namespace_name }}'. Must:
+          - Start with lowercase letter or number
+          - Contain only lowercase letters, numbers, and hyphens
+          - End with lowercase letter or number
+          - Be 63 characters or less
+        quiet: true
+
+    - name: Validate vm_name follows Kubernetes naming conventions
+      ansible.builtin.assert:
+        that:
+          - vm_name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+          - vm_name | length <= 63
+        fail_msg: >
+          Invalid vm_name '{{ vm_name }}'. Must:
+          - Start with lowercase letter or number
+          - Contain only lowercase letters, numbers, and hyphens
+          - End with lowercase letter or number
+          - Be 63 characters or less
+        quiet: true
+
+    - name: Validate instance_type is supported
+      ansible.builtin.assert:
+        that:
+          - instance_type in supported_instance_types
+        fail_msg: >
+          Invalid instance_type '{{ instance_type }}'.
+          Supported U-series types: {{ supported_instance_types | join(', ') }}
+        quiet: true
+
+    - name: Validate boot_volume_size format
+      ansible.builtin.assert:
+        that:
+          - boot_volume_size is match('^[0-9]+(Mi|Gi|Ti)$')
+        fail_msg: >
+          Invalid boot_volume_size '{{ boot_volume_size }}'.
+          Must be a number followed by Mi, Gi, or Ti (e.g., 30Gi, 100Gi, 1Ti).
+        quiet: true
+
+    - name: Set cluster configuration facts
+      ansible.builtin.set_fact:
+        openshift_api_url: "{{ cluster_configs[cluster_name].api_url }}"
+        openshift_token: "{{ cluster_configs[cluster_name].token }}"
+        cacheable: false
+      no_log: true
+
+    - name: Validate cluster credentials are available
+      ansible.builtin.assert:
+        that:
+          - openshift_api_url is defined
+          - openshift_api_url != ''
+          - openshift_token is defined
+          - openshift_token != ''
+        fail_msg: >
+          Missing credentials for cluster '{{ cluster_name }}'.
+          Ensure the following environment variables are set:
+          - {{ cluster_name | upper }}_API_URL
+          - {{ cluster_name | upper }}_K8S_TOKEN
+        quiet: true
+
+    - name: Display operation summary
+      ansible.builtin.debug:
+        msg:
+          - "=== VirtualMachine Provisioning Operation ==="
+          - "Target Cluster: {{ cluster_name }}"
+          - "Namespace: {{ namespace_name }}"
+          - "VM Name: {{ vm_name }}"
+          - "Instance Type: {{ instance_type }}"
+          - "Preference: {{ preference_name }}"
+          - "Boot Volume Source: {{ boot_volume_source }}"
+          - "Boot Volume Size: {{ boot_volume_size }}"
+          - "Network NAD: {{ network_nad_name }}"
+          - "Network Interface: {{ network_interface_name }}"
+          - "Auto Start: {{ auto_start }}"
+          - "API URL: {{ openshift_api_url }}"
+
+  tasks:
+    - name: Provision VirtualMachine with error handling
+      block:
+        - name: Verify target namespace exists
+          kubernetes.core.k8s_info:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            kind: Namespace
+            name: "{{ namespace_name }}"
+          register: namespace_check
+
+        - name: Validate namespace exists
+          ansible.builtin.assert:
+            that:
+              - namespace_check.resources | length > 0
+            fail_msg: >
+              Namespace '{{ namespace_name }}' does not exist in cluster '{{ cluster_name }}'.
+              Please create the namespace first before provisioning the VM.
+            quiet: true
+
+        - name: Check if boot volume source DataSource exists
+          kubernetes.core.k8s_info:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            api_version: cdi.kubevirt.io/v1beta1
+            kind: DataSource
+            name: "{{ boot_volume_source }}"
+            namespace: "{{ namespace_name }}"
+          register: datasource_check
+          failed_when: false
+
+        - name: Check if boot volume source PVC exists (fallback)
+          kubernetes.core.k8s_info:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            kind: PersistentVolumeClaim
+            name: "{{ boot_volume_source }}"
+            namespace: "{{ namespace_name }}"
+          register: pvc_check
+          failed_when: false
+          when: datasource_check.resources | length == 0
+
+        - name: Validate boot volume source exists
+          ansible.builtin.assert:
+            that:
+              - (datasource_check.resources | length > 0) or (pvc_check.resources | default([]) | length > 0)
+            fail_msg: >
+              Boot volume source '{{ boot_volume_source }}' not found as DataSource or PVC
+              in namespace '{{ namespace_name }}'. Please verify the source exists.
+            quiet: true
+
+        - name: Set boot volume source type
+          ansible.builtin.set_fact:
+            boot_volume_source_kind: "{{ 'DataSource' if datasource_check.resources | length > 0 else 'PersistentVolumeClaim' }}"
+
+        - name: Display boot volume source information
+          ansible.builtin.debug:
+            msg:
+              - "Boot volume source found:"
+              - "  Type: {{ boot_volume_source_kind }}"
+              - "  Name: {{ boot_volume_source }}"
+              - "  Namespace: {{ namespace_name }}"
+
+        - name: Verify NetworkAttachmentDefinition exists
+          kubernetes.core.k8s_info:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            api_version: k8s.cni.cncf.io/v1
+            kind: NetworkAttachmentDefinition
+            name: "{{ network_nad_name }}"
+            namespace: "{{ namespace_name }}"
+          register: nad_check
+
+        - name: Validate NetworkAttachmentDefinition exists
+          ansible.builtin.assert:
+            that:
+              - nad_check.resources | length > 0
+            fail_msg: >
+              NetworkAttachmentDefinition '{{ network_nad_name }}' does not exist
+              in namespace '{{ namespace_name }}'. Please create the NAD first.
+            quiet: true
+
+        - name: Prepare standard annotations
+          ansible.builtin.set_fact:
+            standard_annotations:
+              openshift.io/description: "VirtualMachine provisioned by Ansible Automation Platform"
+              provisioned-date: "{{ ansible_date_time.iso8601 }}"
+              provisioned-cluster: "{{ cluster_name }}"
+              instance-type: "{{ instance_type }}"
+              preference: "{{ preference_name }}"
+
+        - name: Prepare standard labels
+          ansible.builtin.set_fact:
+            standard_labels:
+              provisioned-by: "ansible-aap"
+              vm-type: "{{ preference_name }}"
+              instance-type: "{{ instance_type }}"
+
+        - name: Merge user-provided labels with standard labels
+          ansible.builtin.set_fact:
+            final_labels: "{{ vm_labels | combine(standard_labels) }}"
+
+        - name: Merge user-provided annotations with standard annotations
+          ansible.builtin.set_fact:
+            final_annotations: "{{ vm_annotations | combine(standard_annotations) }}"
+
+        - name: Build cloud-init user-data without SSH key
+          ansible.builtin.set_fact:
+            cloud_init_userdata: |
+              #cloud-config
+              hostname: {{ cloud_init_hostname }}
+              user: {{ cloud_init_user }}
+              password: {{ cloud_init_password }}
+              chpasswd: { expire: False }
+              ssh_pwauth: True
+              disable_root: False
+          when: cloud_init_ssh_key == ''
+
+        - name: Build cloud-init user-data with SSH key
+          ansible.builtin.set_fact:
+            cloud_init_userdata: |
+              #cloud-config
+              hostname: {{ cloud_init_hostname }}
+              user: {{ cloud_init_user }}
+              password: {{ cloud_init_password }}
+              chpasswd: { expire: False }
+              ssh_pwauth: True
+              disable_root: False
+              ssh_authorized_keys:
+                - {{ cloud_init_ssh_key }}
+          when: cloud_init_ssh_key != ''
+
+        - name: Build DataVolume name
+          ansible.builtin.set_fact:
+            datavolume_name: "{{ vm_name }}-rootdisk"
+
+        - name: Create VirtualMachine in OpenShift cluster
+          redhat.openshift.k8s:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            state: present
+            definition:
+              apiVersion: kubevirt.io/v1
+              kind: VirtualMachine
+              metadata:
+                name: "{{ vm_name }}"
+                namespace: "{{ namespace_name }}"
+                labels: "{{ final_labels }}"
+                annotations: "{{ final_annotations }}"
+              spec:
+                running: "{{ auto_start }}"
+                instancetype:
+                  name: "{{ instance_type }}"
+                preference:
+                  name: "{{ preference_name }}"
+                dataVolumeTemplates:
+                  - metadata:
+                      name: "{{ datavolume_name }}"
+                    spec:
+                      sourceRef:
+                        kind: "{{ boot_volume_source_kind }}"
+                        name: "{{ boot_volume_source }}"
+                      storage:
+                        resources:
+                          requests:
+                            storage: "{{ boot_volume_size }}"
+                template:
+                  metadata:
+                    labels: "{{ final_labels }}"
+                  spec:
+                    networks:
+                      - name: "{{ network_interface_name }}"
+                        multus:
+                          networkName: "{{ network_nad_name }}"
+                    domain:
+                      devices:
+                        disks:
+                          - disk:
+                              bus: virtio
+                            name: rootdisk
+                          - disk:
+                              bus: virtio
+                            name: cloudinitdisk
+                        interfaces:
+                          - name: "{{ network_interface_name }}"
+                            bridge: {}
+                    volumes:
+                      - dataVolume:
+                          name: "{{ datavolume_name }}"
+                        name: rootdisk
+                      - cloudInitNoCloud:
+                          userData: "{{ cloud_init_userdata }}"
+                        name: cloudinitdisk
+          register: vm_result
+
+        - name: Wait for VirtualMachine to be created
+          ansible.builtin.pause:
+            seconds: 5
+
+        - name: Verify VirtualMachine was created
+          kubernetes.core.k8s_info:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            api_version: kubevirt.io/v1
+            kind: VirtualMachine
+            name: "{{ vm_name }}"
+            namespace: "{{ namespace_name }}"
+          register: vm_info
+
+        - name: Get VirtualMachineInstance status if VM is running
+          kubernetes.core.k8s_info:
+            host: "{{ openshift_api_url }}"
+            api_key: "{{ openshift_token }}"
+            validate_certs: false
+            api_version: kubevirt.io/v1
+            kind: VirtualMachineInstance
+            name: "{{ vm_name }}"
+            namespace: "{{ namespace_name }}"
+          register: vmi_info
+          failed_when: false
+          when: auto_start | bool
+
+        - name: Display operation result
+          ansible.builtin.debug:
+            msg:
+              - "=== Operation Completed Successfully ==="
+              - "Cluster: {{ cluster_name }}"
+              - "Namespace: {{ namespace_name }}"
+              - "VM Name: {{ vm_name }}"
+              - "Created: {{ vm_result.changed | ternary('Yes (new)', 'No (already exists)') }}"
+              - "UID: {{ vm_info.resources[0].metadata.uid }}"
+              - "Instance Type: {{ instance_type }}"
+              - "Preference: {{ preference_name }}"
+              - "Running: {{ vm_info.resources[0].spec.running }}"
+              - "Boot Volume: {{ datavolume_name }} ({{ boot_volume_size }})"
+              - "Network: {{ network_nad_name }} via {{ network_interface_name }}"
+
+        - name: Display VirtualMachineInstance status if available
+          ansible.builtin.debug:
+            msg:
+              - "=== VirtualMachineInstance Status ==="
+              - "Phase: {{ vmi_info.resources[0].status.phase | default('N/A') }}"
+              - "Node: {{ vmi_info.resources[0].status.nodeName | default('Not scheduled') }}"
+              - "Guest OS Info: {{ vmi_info.resources[0].status.guestOSInfo | default({}) | to_nice_json }}"
+          when:
+            - auto_start | bool
+            - vmi_info.resources is defined
+            - vmi_info.resources | length > 0
+
+        - name: Display usage instructions
+          ansible.builtin.debug:
+            msg:
+              - "=== VM Access Instructions ==="
+              - ""
+              - "1. Check VM status:"
+              - "   oc get vm {{ vm_name }} -n {{ namespace_name }}"
+              - ""
+              - "2. Check VMI (running instance) status:"
+              - "   oc get vmi {{ vm_name }} -n {{ namespace_name }}"
+              - ""
+              - "3. Access VM console:"
+              - "   virtctl console {{ vm_name }} -n {{ namespace_name }}"
+              - ""
+              - "4. SSH to VM (if network is configured for external access):"
+              - "   ssh {{ cloud_init_user }}@<vm-ip-address>"
+              - ""
+              - "5. Start/Stop VM:"
+              - "   virtctl start {{ vm_name }} -n {{ namespace_name }}"
+              - "   virtctl stop {{ vm_name }} -n {{ namespace_name }}"
+              - ""
+              - "6. View VM details in OpenShift Console:"
+              - "   Virtualization -> VirtualMachines -> {{ vm_name }}"
+              - ""
+              - "Cloud-init credentials:"
+              - "   Username: {{ cloud_init_user }}"
+              - "   Password: {{ cloud_init_password }}"
+
+      rescue:
+        - name: Handle VM creation failure
+          ansible.builtin.debug:
+            msg:
+              - "=== Operation Failed ==="
+              - "Cluster: {{ cluster_name }}"
+              - "Namespace: {{ namespace_name }}"
+              - "VM Name: {{ vm_name }}"
+              - "Error: See above for details"
+
+        - name: Fail with clear error message
+          ansible.builtin.fail:
+            msg: >
+              Failed to provision VirtualMachine '{{ vm_name }}'
+              in namespace '{{ namespace_name }}' on cluster '{{ cluster_name }}'.
+              Please check the error details above and verify:
+              1. Cluster credentials are correct
+              2. The namespace exists
+              3. OpenShift Virtualization operator is installed
+              4. The boot volume source ({{ boot_volume_source }}) exists
+              5. The NetworkAttachmentDefinition ({{ network_nad_name }}) exists
+              6. The instance type ({{ instance_type }}) is valid
+              7. You have permissions to create VirtualMachines
+              8. Sufficient storage is available for the DataVolume
+              9. The cluster API is accessible
+
+  post_tasks:
+    - name: Set operation statistics for AAP reporting
+      ansible.builtin.set_stats:
+        data:
+          vm_created: "{{ vm_result.changed | default(false) }}"
+          vm_name: "{{ vm_name }}"
+          namespace_name: "{{ namespace_name }}"
+          target_cluster: "{{ cluster_name }}"
+          instance_type: "{{ instance_type }}"
+          preference: "{{ preference_name }}"
+          boot_volume_source: "{{ boot_volume_source }}"
+          boot_volume_size: "{{ boot_volume_size }}"
+          network_nad_name: "{{ network_nad_name }}"
+          vm_running: "{{ auto_start | default(false) }}"
+          datavolume_name: "{{ datavolume_name | default('unknown') }}"
+          operation_timestamp: "{{ ansible_date_time.iso8601 }}"
+      when: vm_result is defined
